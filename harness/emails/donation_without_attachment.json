@@ -1,0 +1,8 @@
+{
+  "message_id": "msg_003",
+  "subject": "Donation Confirmation",
+  "from": "charity@example.org",
+  "date": "2026-05-24",
+  "body": "Thank you for your donation.",
+  "attachments": []
+}

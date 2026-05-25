@@ -1,0 +1,8 @@
+{
+  "message_id": "msg_002",
+  "subject": "Weekly Newsletter",
+  "from": "news@example.com",
+  "date": "2026-05-24",
+  "body": "Welcome to this week's update.",
+  "attachments": []
+}
