@@ -1,0 +1,12 @@
+{
+  "accounts": [
+    {
+      "name": "primary",
+      "enabled": true
+    },
+    {
+      "name": "secondary",
+      "enabled": false
+    }
+  ]
+}
