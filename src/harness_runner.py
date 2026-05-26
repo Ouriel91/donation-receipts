@@ -1,33 +1,22 @@
-import json
 from pathlib import Path
 
 from src.attachment_saver import plan_receipt_path, save_attachment
 from src.manifest import was_processed, mark_processed
+from src.providers.email_provider import EmailProvider
 from src.receipt_detector import detect_donation_email
 
 HARNESS_ACCOUNT = "harness"
 
 
-def load_harness_emails(harness_dir: Path) -> list[dict]:
-    if not harness_dir.exists():
-        raise FileNotFoundError(f"Harness directory not found: {harness_dir}")
-
-    emails = []
-    for path in sorted(harness_dir.glob("*.json")):
-        with path.open("r", encoding="utf-8") as f:
-            emails.append(json.load(f))
-    return emails
-
-
 def run_harness(
-    harness_dir: Path,
+    provider: EmailProvider,
     receipts_dir: Path,
     manifest_path: Path,
     dry_run: bool,
 ) -> list[dict]:
-    print(f"[HARNESS] Loading emails from {harness_dir}/")
+    print("[HARNESS] Loading emails...")
 
-    emails = load_harness_emails(harness_dir)
+    emails = provider.fetch_emails()
     print(f"[HARNESS] Found {len(emails)} emails")
     print()
 
