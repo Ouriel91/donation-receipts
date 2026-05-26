@@ -1,4 +1,7 @@
 import argparse
+from pathlib import Path
+
+from src.harness_runner import run_harness
 
 
 def main():
@@ -9,9 +12,15 @@ def main():
 
     args = parser.parse_args()
 
-    print("Donation Receipts Project")
-    print(f"Mode: {args.mode}")
-    print(f"Dry run: {args.dry_run}")
+    if args.mode == "harness":
+        run_harness(
+            harness_dir=Path("harness/emails"),
+            receipts_dir=Path("receipts"),
+            manifest_path=Path("data/processed_messages.json"),
+            dry_run=args.dry_run,
+        )
+    else:
+        print(f"Mode '{args.mode}' not yet implemented.")
 
 
 if __name__ == "__main__":
