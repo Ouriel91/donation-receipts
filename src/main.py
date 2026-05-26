@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from src.config import HARNESS_DIR, MANIFEST_PATH, RECEIPTS_DIR
 from src.harness_runner import run_harness
 
 
@@ -14,9 +15,9 @@ def main():
 
     if args.mode == "harness":
         run_harness(
-            harness_dir=Path("harness/emails"),
-            receipts_dir=Path("receipts"),
-            manifest_path=Path("data/processed_messages.json"),
+            harness_dir=HARNESS_DIR,
+            receipts_dir=RECEIPTS_DIR,
+            manifest_path=MANIFEST_PATH,
             dry_run=args.dry_run,
         )
     else:
