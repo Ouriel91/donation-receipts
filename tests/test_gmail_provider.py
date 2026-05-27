@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.providers.gmail_provider import GmailProvider, _map_message
+from src.providers.gmail_provider import GmailProvider, _extract_attachments, _map_message
 
 
 def _make_service(messages=None, detail=None):
@@ -22,7 +22,8 @@ _DETAIL = {
             {"name": "Subject", "value": "Test Subject"},
             {"name": "From", "value": "donor@example.com"},
             {"name": "Date", "value": "Mon, 01 Jan 2024 10:00:00 +0000"},
-        ]
+        ],
+        "parts": [],
     },
 }
 
@@ -70,3 +71,74 @@ def test_fetch_emails_date_parsing():
     }
     result = _map_message(detail)
     assert result["date"] == "2024-03-15"
+
+
+def test_no_attachments_returns_empty_list():
+    payload = {
+        "parts": [
+            {"filename": "", "mimeType": "text/plain", "body": {}},
+        ]
+    }
+    assert _extract_attachments(payload) == []
+
+
+def test_single_pdf_attachment():
+    payload = {
+        "parts": [
+            {
+                "filename": "receipt.pdf",
+                "mimeType": "application/pdf",
+                "body": {"attachmentId": "att001"},
+            }
+        ]
+    }
+    result = _extract_attachments(payload)
+    assert result == [
+        {"filename": "receipt.pdf", "content_type": "application/pdf", "attachment_id": "att001"}
+    ]
+
+
+def test_multiple_attachments():
+    payload = {
+        "parts": [
+            {"filename": "doc.pdf", "mimeType": "application/pdf", "body": {"attachmentId": "a1"}},
+            {"filename": "scan.jpg", "mimeType": "image/jpeg", "body": {"attachmentId": "a2"}},
+        ]
+    }
+    result = _extract_attachments(payload)
+    assert len(result) == 2
+    assert result[0]["filename"] == "doc.pdf"
+    assert result[1]["filename"] == "scan.jpg"
+
+
+def test_nested_parts_extracted():
+    payload = {
+        "parts": [
+            {
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "filename": "nested.pdf",
+                        "mimeType": "application/pdf",
+                        "body": {"attachmentId": "a3"},
+                    }
+                ],
+            }
+        ]
+    }
+    result = _extract_attachments(payload)
+    assert result == [
+        {"filename": "nested.pdf", "content_type": "application/pdf", "attachment_id": "a3"}
+    ]
+
+
+def test_missing_filename_skipped():
+    payload = {
+        "parts": [
+            {"filename": "", "mimeType": "text/html", "body": {}},
+            {"filename": "keep.pdf", "mimeType": "application/pdf", "body": {"attachmentId": "a4"}},
+        ]
+    }
+    result = _extract_attachments(payload)
+    assert len(result) == 1
+    assert result[0]["filename"] == "keep.pdf"
