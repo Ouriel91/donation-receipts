@@ -14,3 +14,42 @@ It is operational documentation, not architecture documentation.
 
 ```bash
 python -m venv .venv
+```
+
+---
+
+## Gmail Setup (Future)
+
+> Not yet implemented. These steps will be required once OAuth is wired.
+
+### Prerequisites
+
+- A Google Cloud project with Gmail API enabled
+- OAuth 2.0 credentials downloaded as `credentials.json`
+
+### Credential Files
+
+Place credential files inside the relevant account folder:
+
+```
+accounts/primary/credentials.json   ← downloaded from Google Cloud Console
+accounts/primary/token.json         ← auto-generated on first OAuth run
+```
+
+Both files are excluded from Git via `.gitignore`. Never commit them.
+
+### Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### First Run
+
+Run the auth helper once per account to generate `token.json`:
+
+```bash
+python -c "from pathlib import Path; from src.providers.gmail_auth import get_gmail_credentials; get_gmail_credentials(Path('accounts/primary'))"
+```
+
+A browser window will open for Google login. After login, `token.json` is saved locally and reused on future runs.
