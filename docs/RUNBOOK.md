@@ -18,9 +18,51 @@ python -m venv .venv
 
 ---
 
-## Gmail Setup (Future)
+## Gmail Mode
 
-> Not yet implemented. These steps will be required once OAuth is wired.
+### Prerequisites
+
+- A Google Cloud project with Gmail API enabled
+- OAuth 2.0 credentials downloaded as `credentials.json`
+
+### Credential Files
+
+Place credential files inside the relevant account folder:
+
+```
+accounts/<name>/credentials.json   ← downloaded from Google Cloud Console
+accounts/<name>/token.json         ← auto-generated on first OAuth run
+```
+
+Both files are excluded from Git via `.gitignore`. Never commit them.
+
+### First Run (OAuth)
+
+Run once per account to generate `token.json`. A browser window opens for Google login:
+
+```bash
+python -c "from pathlib import Path; from src.providers.gmail_auth import get_gmail_credentials; get_gmail_credentials(Path('accounts/<name>'))"
+```
+
+### Dry Run
+
+Plans what would be saved without writing any files or updating the manifest:
+
+```bash
+python -m src.main --mode gmail --account <name> --dry-run
+```
+
+### Real Run
+
+Downloads attachments and saves receipts:
+
+```bash
+python -m src.main --mode gmail --account <name>
+```
+
+---
+
+## Gmail Setup (Legacy Placeholder — now implemented above)
 
 ### Prerequisites
 
