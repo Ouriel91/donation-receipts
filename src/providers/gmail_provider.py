@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 
 from googleapiclient.discovery import build
@@ -26,6 +27,24 @@ class GmailProvider:
             ).execute()
             emails.append(_map_message(detail))
         return emails
+
+    def download_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        creds = get_gmail_credentials(self.account_dir)
+        service = build("gmail", "v1", credentials=creds)
+        response = (
+            service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+            .execute()
+        )
+        data = response.get("data")
+        if not data:
+            raise ValueError(
+                f"No data in attachment response for message={message_id}, attachment={attachment_id}"
+            )
+        padding = (4 - len(data) % 4) % 4
+        return base64.urlsafe_b64decode(data + "=" * padding)
 
 
 def _map_message(detail: dict) -> dict:
