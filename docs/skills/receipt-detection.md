@@ -68,16 +68,24 @@ Allowed attachment extensions may include:
 
 ## Negative Signals
 
-The detector should avoid treating unrelated emails as donations.
+The following keywords indicate commercial or invoice context and will downgrade confidence to `low` unless strong donation signals are also present:
 
-Examples:
+### Hebrew
 
-- Shopping receipts
-- Delivery receipts
-- Bank statements
-- Salary documents
-- Random invoices
-- Marketing newsletters without donation context
+- חשבונית
+- חשבונית מס
+
+### English
+
+- invoice
+- tax invoice
+- order
+- purchase
+- shipping
+- delivery
+- payment receipt
+
+**Override rule:** If a strong donation keyword (e.g. "תרומה", "donation") is present alongside a negative keyword, the strong signal wins and confidence is not downgraded.
 
 ---
 
