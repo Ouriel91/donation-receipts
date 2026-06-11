@@ -1,16 +1,41 @@
 from dataclasses import dataclass
 
 
-DONATION_KEYWORDS = [
+STRONG_DONATION_KEYWORDS = [
+    # Hebrew
     "תרומה",
-    "קבלה",
+    "קבלה על תרומה",
     "אישור תרומה",
     "תרומתך",
     "סעיף 46",
+    "עמותה",
+    'מלכ"ר',
+    # English
     "donation",
+    "donation receipt",
+    "tax deductible",
+    "charity",
+    "thank you for your donation",
+]
+
+GENERIC_POSITIVE_KEYWORDS = [
+    "קבלה",
     "receipt",
     "tax receipt",
-    "thank you for your donation",
+]
+
+NEGATIVE_KEYWORDS = [
+    # Hebrew
+    "חשבונית",
+    "חשבונית מס",
+    # English
+    "invoice",
+    "tax invoice",
+    "order",
+    "purchase",
+    "shipping",
+    "delivery",
+    "payment receipt",
 ]
 
 
@@ -28,10 +53,13 @@ def detect_donation_email(email: dict) -> DetectionResult:
 
     text = f"{subject} {body}"
 
-    matched_keywords = [
-        keyword for keyword in DONATION_KEYWORDS
-        if keyword.lower() in text
-    ]
+    matched_strong = [k for k in STRONG_DONATION_KEYWORDS if k.lower() in text]
+    matched_generic = [k for k in GENERIC_POSITIVE_KEYWORDS if k.lower() in text]
+    matched_negative = [k for k in NEGATIVE_KEYWORDS if k.lower() in text]
+
+    has_strong = bool(matched_strong)
+    has_generic = bool(matched_generic)
+    has_negative = bool(matched_negative)
 
     has_supported_attachment = any(
         str(att.get("filename", "")).lower().endswith((".pdf", ".jpg", ".jpeg", ".png"))
@@ -39,21 +67,27 @@ def detect_donation_email(email: dict) -> DetectionResult:
     )
 
     reasons = []
-
-    for keyword in matched_keywords:
+    for keyword in matched_strong:
         reasons.append(f"matched keyword: {keyword}")
-
+    for keyword in matched_generic:
+        reasons.append(f"matched keyword: {keyword}")
+    for keyword in matched_negative:
+        reasons.append(f"negative signal: {keyword}")
     if has_supported_attachment:
         reasons.append("has supported attachment")
 
-    is_donation = bool(matched_keywords)
-
-    if matched_keywords and has_supported_attachment:
+    if has_negative and not has_strong:
+        confidence = "low"
+    elif has_strong and has_supported_attachment:
         confidence = "high"
-    elif matched_keywords:
+    elif has_strong:
+        confidence = "medium"
+    elif has_generic and not has_negative and has_supported_attachment:
         confidence = "medium"
     else:
         confidence = "low"
+
+    is_donation = confidence != "low"
 
     return DetectionResult(
         is_donation=is_donation,
