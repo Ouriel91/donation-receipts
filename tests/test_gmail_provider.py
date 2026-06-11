@@ -142,3 +142,55 @@ def test_missing_filename_skipped():
     result = _extract_attachments(payload)
     assert len(result) == 1
     assert result[0]["filename"] == "keep.pdf"
+
+
+# --- download_attachment tests ---
+
+def _make_attachment_service(data: str | None):
+    mock_service = MagicMock()
+    mock_service.users().messages().attachments().get().execute.return_value = (
+        {"data": data} if data is not None else {}
+    )
+    return mock_service
+
+
+def test_download_attachment_returns_bytes(tmp_path):
+    import base64
+    encoded = base64.urlsafe_b64encode(b"hello").decode()
+    mock_service = _make_attachment_service(encoded)
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        result = GmailProvider(tmp_path).download_attachment("msg1", "att1")
+    assert isinstance(result, bytes)
+
+
+def test_download_attachment_decodes_base64url(tmp_path):
+    import base64
+    raw = b"receipt content \xff\xfe"
+    encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    mock_service = _make_attachment_service(encoded)
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        result = GmailProvider(tmp_path).download_attachment("msg1", "att1")
+    assert result == raw
+
+
+def test_download_attachment_missing_data_raises(tmp_path):
+    import pytest
+    mock_service = _make_attachment_service(None)
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        with pytest.raises(ValueError, match="No data in attachment response"):
+            GmailProvider(tmp_path).download_attachment("msg1", "att1")
+
+
+def test_download_attachment_calls_correct_api(tmp_path):
+    import base64
+    encoded = base64.urlsafe_b64encode(b"data").decode()
+    mock_service = _make_attachment_service(encoded)
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        GmailProvider(tmp_path).download_attachment("msgXYZ", "attABC")
+    mock_service.users().messages().attachments().get.assert_any_call(
+        userId="me", messageId="msgXYZ", id="attABC"
+    )
