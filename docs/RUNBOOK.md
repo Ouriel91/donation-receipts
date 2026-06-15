@@ -62,6 +62,63 @@ python -m src.main --mode gmail --account <name>
 
 ---
 
+---
+
+## Summary Workbook
+
+Generates a yearly Excel workbook from saved receipt PDFs.
+
+### Input
+
+```
+receipts/<account>/<year>/<month>/*.pdf
+```
+
+### Output
+
+```
+reports/<account>/<year>/donation_summary_<year>.xlsx
+```
+
+One sheet per month that has PDFs. One row per receipt PDF.
+
+### Run
+
+```bash
+python -m src.main --mode summary --account <name> --year <year>
+```
+
+Example:
+
+```bash
+python -m src.main --mode summary --account primary --year 2026
+```
+
+### Columns
+
+`file_name`, `file_path`, `organization_name`, `registration_number`,
+`receipt_number`, `tax_report_number`, `receipt_date`, `amount`,
+`extraction_status`, `notes`
+
+### extraction_status values
+
+- `ok` — all critical fields found
+- `partial` — critical fields found but some optional fields missing
+- `needs_review` — a critical field (amount, receipt_date, organization_name) is
+  missing, or the PDF could not be read
+
+`needs_review` rows are expected and are meant for manual correction in Excel.
+`file_name` and `file_path` are always populated so every row traces back to its
+source PDF.
+
+### Notes
+
+- Existing workbooks are overwritten on re-run (reports are regenerable).
+- If no receipts exist for the given account/year, the workbook is still created
+  with a Summary sheet explaining that no receipts were found.
+
+---
+
 ## Gmail Setup (Legacy Placeholder — now implemented above)
 
 ### Prerequisites
