@@ -42,6 +42,7 @@ data/*.json
 
 # Keep placeholders
 !data/.gitkeep
+reports/
 
 # =========================
 # OS files
