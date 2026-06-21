@@ -11,6 +11,7 @@ def run_gmail(
     receipts_dir: Path,
     manifest_path: Path,
     dry_run: bool,
+    reprocess: bool = False,
 ) -> list[dict]:
     account = provider.account_dir.name
 
@@ -27,7 +28,7 @@ def run_gmail(
     for email in emails:
         message_id = email.get("message_id", "unknown")
 
-        if was_processed(message_id, account, manifest_path):
+        if not reprocess and was_processed(message_id, account, manifest_path):
             print(f"[MSG {message_id}] SKIP - already processed")
             results.append({
                 "message_id": message_id,

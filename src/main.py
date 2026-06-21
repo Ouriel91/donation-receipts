@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--year", type=int, default=None)
     parser.add_argument("--query", default=None,
                         help="Gmail search query (default: newer_than:7d has:attachment)")
+    parser.add_argument("--reprocess", action="store_true",
+                        help="Re-process messages already in the manifest (backfill mode)")
 
     args = parser.parse_args()
 
@@ -37,6 +39,7 @@ def main():
             receipts_dir=RECEIPTS_DIR,
             manifest_path=MANIFEST_PATH,
             dry_run=args.dry_run,
+            reprocess=args.reprocess,
         )
     elif args.mode == "summary":
         if not args.account:

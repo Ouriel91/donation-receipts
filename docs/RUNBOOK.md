@@ -76,7 +76,28 @@ python -m src.main --mode gmail --account primary --dry-run \
 
 If `--query` is omitted the default (`newer_than:7d has:attachment`) is used.
 
----
+### Backfill / Reprocess
+
+Re-download and re-save attachments for messages already in the manifest, without deleting or clearing history:
+
+```bash
+python -m src.main --mode gmail --account primary \
+    --query "newer_than:365d has:attachment" --reprocess
+```
+
+Then regenerate the summary workbook if needed:
+
+```bash
+python -m src.main --mode summary --account primary --year 2026
+```
+
+**How it works:**
+
+- `--reprocess` skips the manifest duplicate check for this run only.
+- The manifest is never deleted or modified differently — existing entries stay.
+- If the receipt file is still on disk, the re-downloaded copy is saved alongside it with a `__2` suffix (e.g. `receipt__2.pdf`).
+- If the receipt file was deleted but the manifest entry remains, it is saved at the original path.
+- Daily runs without `--reprocess` continue to skip duplicates as normal.
 
 ---
 

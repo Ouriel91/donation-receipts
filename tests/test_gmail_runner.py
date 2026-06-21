@@ -156,6 +156,31 @@ class TestRunGmail:
 
         provider.download_attachment.assert_not_called()
 
+    def test_reprocess_saves_attachment_when_file_exists(self, tmp_path):
+        account_dir = tmp_path / "myaccount"
+        receipts_dir = tmp_path / "receipts"
+        manifest_path = tmp_path / "manifest.json"
+
+        run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
+        results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False, reprocess=True)
+
+        assert results[0]["status"] != "skipped_duplicate"
+        assert len(results[0]["planned_paths"]) > 0
+
+    def test_reprocess_saves_attachment_when_file_missing(self, tmp_path):
+        account_dir = tmp_path / "myaccount"
+        receipts_dir = tmp_path / "receipts"
+        manifest_path = tmp_path / "manifest.json"
+
+        run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
+        for f in receipts_dir.rglob("*.pdf"):
+            f.unlink()
+
+        results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False, reprocess=True)
+
+        assert results[0]["status"] != "skipped_duplicate"
+        assert len(list(receipts_dir.rglob("*.pdf"))) > 0
+
     def test_download_failure_skips_attachment(self, tmp_path):
         account_dir = tmp_path / "myaccount"
         provider = make_mock_provider(account_dir, [DONATION_EMAIL])
