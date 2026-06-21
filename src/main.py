@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--account", default=None)
     parser.add_argument("--year", type=int, default=None)
+    parser.add_argument("--query", default=None,
+                        help="Gmail search query (default: newer_than:7d has:attachment)")
 
     args = parser.parse_args()
 
@@ -31,7 +33,7 @@ def main():
             print("--account is required for gmail mode")
             sys.exit(1)
         run_gmail(
-            provider=GmailProvider(ACCOUNTS_DIR / args.account),
+            provider=GmailProvider(ACCOUNTS_DIR / args.account, query=args.query),
             receipts_dir=RECEIPTS_DIR,
             manifest_path=MANIFEST_PATH,
             dry_run=args.dry_run,

@@ -38,11 +38,11 @@ accounts/**/credentials.json
 # Local runtime data
 # =========================
 receipts/
+reports/
 data/*.json
 
 # Keep placeholders
 !data/.gitkeep
-reports/
 
 # =========================
 # OS files

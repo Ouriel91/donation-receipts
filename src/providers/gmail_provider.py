@@ -9,14 +9,15 @@ _QUERY = "newer_than:7d has:attachment"
 
 
 class GmailProvider:
-    def __init__(self, account_dir: Path) -> None:
+    def __init__(self, account_dir: Path, query: str | None = None) -> None:
         self.account_dir = account_dir
+        self._query = query or _QUERY
 
     def fetch_emails(self) -> list[dict]:
         creds = get_gmail_credentials(self.account_dir)
         service = build("gmail", "v1", credentials=creds)
 
-        result = service.users().messages().list(userId="me", q=_QUERY).execute()
+        result = service.users().messages().list(userId="me", q=self._query).execute()
 
         emails = []
         for msg in result.get("messages", []):
