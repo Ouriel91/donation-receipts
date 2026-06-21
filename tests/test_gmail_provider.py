@@ -213,3 +213,38 @@ def test_custom_query_used(tmp_path):
          patch("src.providers.gmail_provider.build", return_value=mock_service):
         GmailProvider(tmp_path, query=custom_query).fetch_emails()
     mock_service.users().messages().list.assert_called_with(userId="me", q=custom_query)
+
+
+def _make_detail(msg_id: str, subject: str) -> dict:
+    return {
+        "id": msg_id,
+        "snippet": f"Snippet for {msg_id}",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": subject},
+                {"name": "From", "value": "donor@example.com"},
+                {"name": "Date", "value": "Mon, 01 Jan 2024 10:00:00 +0000"},
+            ],
+            "parts": [],
+        },
+    }
+
+
+def test_fetch_emails_paginates_all_pages(tmp_path):
+    mock_service = MagicMock()
+    mock_service.users().messages().list().execute.side_effect = [
+        {"messages": [{"id": "msg1"}], "nextPageToken": "token_page2"},
+        {"messages": [{"id": "msg2"}]},
+    ]
+    mock_service.users().messages().get().execute.side_effect = [
+        _make_detail("msg1", "Receipt Jan"),
+        _make_detail("msg2", "Receipt Feb"),
+    ]
+
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        result = GmailProvider(tmp_path).fetch_emails()
+
+    assert len(result) == 2
+    assert result[0]["message_id"] == "msg1"
+    assert result[1]["message_id"] == "msg2"

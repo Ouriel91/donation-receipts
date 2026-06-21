@@ -17,10 +17,20 @@ class GmailProvider:
         creds = get_gmail_credentials(self.account_dir)
         service = build("gmail", "v1", credentials=creds)
 
-        result = service.users().messages().list(userId="me", q=self._query).execute()
+        all_messages = []
+        page_token = None
+        while True:
+            kwargs: dict = {"userId": "me", "q": self._query}
+            if page_token:
+                kwargs["pageToken"] = page_token
+            result = service.users().messages().list(**kwargs).execute()
+            all_messages.extend(result.get("messages", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
 
         emails = []
-        for msg in result.get("messages", []):
+        for msg in all_messages:
             detail = service.users().messages().get(
                 userId="me",
                 id=msg["id"],
