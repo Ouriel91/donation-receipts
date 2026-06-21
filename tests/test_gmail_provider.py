@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.providers.gmail_provider import GmailProvider, _extract_attachments, _map_message
+from src.providers.gmail_provider import GmailProvider, _QUERY, _extract_attachments, _map_message
 
 
 def _make_service(messages=None, detail=None):
@@ -194,3 +194,22 @@ def test_download_attachment_calls_correct_api(tmp_path):
     mock_service.users().messages().attachments().get.assert_any_call(
         userId="me", messageId="msgXYZ", id="attABC"
     )
+
+
+# --- query parameter tests ---
+
+def test_default_query_used(tmp_path):
+    mock_service = _make_service(messages=None)
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        GmailProvider(tmp_path).fetch_emails()
+    mock_service.users().messages().list.assert_called_with(userId="me", q=_QUERY)
+
+
+def test_custom_query_used(tmp_path):
+    custom_query = "newer_than:90d has:attachment"
+    mock_service = _make_service(messages=None)
+    with patch("src.providers.gmail_provider.get_gmail_credentials"), \
+         patch("src.providers.gmail_provider.build", return_value=mock_service):
+        GmailProvider(tmp_path, query=custom_query).fetch_emails()
+    mock_service.users().messages().list.assert_called_with(userId="me", q=custom_query)

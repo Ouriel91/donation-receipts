@@ -60,6 +60,22 @@ Downloads attachments and saves receipts:
 python -m src.main --mode gmail --account <name>
 ```
 
+### Custom Query Window
+
+Override the default search window without code changes:
+
+```bash
+# Fetch attachments from the last 90 days (backfill / wider validation)
+python -m src.main --mode gmail --account primary \
+    --query "newer_than:90d has:attachment"
+
+# Dry-run first to preview without writing
+python -m src.main --mode gmail --account primary --dry-run \
+    --query "newer_than:90d has:attachment"
+```
+
+If `--query` is omitted the default (`newer_than:7d has:attachment`) is used.
+
 ---
 
 ---
