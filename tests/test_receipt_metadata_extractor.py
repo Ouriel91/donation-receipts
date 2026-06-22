@@ -203,3 +203,119 @@ def test_registration_number_nine_digits():
     meta = extract_metadata(text, path)
 
     assert meta.registration_number == "123456789"
+
+
+# --- amount: whole numbers (no decimal places) ---
+
+def test_amount_whole_number_shekel_prefix():
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.amount == "200"
+
+
+def test_amount_whole_number_total_indicator():
+    text = 'קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\nסה"כ 1,500'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.amount == "1500"
+
+
+def test_amount_whole_number_shekel_word():
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\nשקל 350"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.amount == "350"
+
+
+# --- tax_report_number: new compound anchors ---
+
+def test_tax_report_num_reshet_hamisim_same_line():
+    # "רשות המיסים: 45678" — compound anchor without לרשות prefix
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nרשות המיסים: 45678"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.tax_report_number == "45678"
+
+
+def test_tax_report_num_divuach_hateruma_next_line():
+    # "דיווח התרומה" on one line, number on next
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nדיווח התרומה\n45678"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.tax_report_number == "45678"
+
+
+def test_tax_report_num_ishur_divuach_same_line():
+    # "אישור דיווח: 45678" — compound phrase, not bare אישור
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nאישור דיווח: 45678"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.tax_report_number == "45678"
+
+
+# --- registration_number: wider search window ---
+
+def test_registration_number_four_lines_after_anchor():
+    # 9-digit number sits 4 lines below the anchor — beyond old ±2 window
+    text = "קרן קובי מנדל\nעמותה\nפרטים\nנוספים\nלכבוד\n123456789\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.registration_number == "123456789"
+
+
+# --- receipt_number: text-based fallback ---
+
+def test_receipt_number_from_donation_phrase():
+    # "קבלה תרומה 80806" in text; filename has no trailing number
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nקבלה תרומה 80806"
+    path = Path("receipts/primary/2026/06_June/receipt.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.receipt_number == "80806"
+
+
+def test_receipt_number_from_mkr_phrase():
+    # "מקור קבלה תרומה 80553" in text; filename has no trailing number
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nמקור קבלה תרומה 80553"
+    path = Path("receipts/primary/2026/06_June/receipt.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.receipt_number == "80553"
+
+
+def test_receipt_number_from_label():
+    # "מספר קבלה: 80806" in text; filename has no trailing number
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nמספר קבלה: 80806"
+    path = Path("receipts/primary/2026/06_June/receipt.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.receipt_number == "80806"
+
+
+def test_receipt_number_filename_takes_precedence_over_text():
+    # When filename has a trailing number it should win over text phrase
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00\nקבלה תרומה 99999"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_12345.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.receipt_number == "12345"
+
+
+# --- organization_name: beyond line 10 ---
+
+def test_org_name_beyond_line_10():
+    # Org name appears on line 12 (0-indexed 11); first 10 lines are non-Hebrew-only
+    preamble = "\n".join([f"line{i} 123" for i in range(11)])
+    text = f"{preamble}\nקרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+
+    assert meta.organization_name == "קרן קובי מנדל"

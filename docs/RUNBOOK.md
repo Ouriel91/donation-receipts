@@ -99,6 +99,28 @@ python -m src.main --mode summary --account primary --year 2026
 - If the receipt file was deleted but the manifest entry remains, it is saved at the original path.
 - Daily runs without `--reprocess` continue to skip duplicates as normal.
 
+### Rebuild Year
+
+Delete all saved receipts for an account/year and re-download from scratch:
+
+```bash
+python -m src.main --mode gmail --account primary --year 2026 \
+    --query "newer_than:365d has:attachment" --rebuild
+```
+
+**What `--rebuild` does:**
+
+- Deletes `receipts/<account>/<year>/` before running
+- Implies `--reprocess` (skips manifest duplicate check for this run)
+- Does **not** delete the manifest, credentials, or any other year's receipts
+- Useful after metadata extraction improvements to regenerate a clean set of PDFs
+
+Run the summary workbook afterwards to refresh the Excel report:
+
+```bash
+python -m src.main --mode summary --account primary --year 2026
+```
+
 ---
 
 ## Summary Workbook

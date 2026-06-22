@@ -10,10 +10,10 @@ _DATE_PATTERN = re.compile(r"\b(\d{2})[./](\d{2})[./](\d{4})\b")
 # followed by optional shekel word then digits.
 _AMOUNT_SHEKEL_PREFIX = re.compile(r"₪\s*([\d,]+(?:\.\d{1,2})?)")
 _AMOUNT_TOTAL = re.compile(
-    r'(?:סה"כ|הס"כ)\s*(?:₪|שקל|לקש)?\s*([\d,]+\.\d{2})',
+    r'(?:סה"כ|הס"כ)\s*(?:₪|שקל|לקש)?\s*([\d,]+(?:\.\d{1,2})?)',
     re.UNICODE,
 )
-_AMOUNT_SHEKEL_WORD = re.compile(r"(?:שקל|לקש)\s*([\d,]+\.\d{2})", re.UNICODE)
+_AMOUNT_SHEKEL_WORD = re.compile(r"(?:שקל|לקש)\s*([\d,]+(?:\.\d{1,2})?)", re.UNICODE)
 
 _NINE_DIGITS = re.compile(r"\b(\d{9})\b")
 _ASSOC_ANCHOR = re.compile(r'(?:עמותה|מוסד|מלכ"ר)', re.UNICODE)
@@ -22,18 +22,28 @@ _ASSOC_ANCHOR = re.compile(r'(?:עמותה|מוסד|מלכ"ר)', re.UNICODE)
 # Pattern A: number appears before ": anchor" across lines  e.g. "5527\n: \nהמיסים"
 _TAX_NUM_BEFORE = re.compile(r"(\d{3,8})\s*:\s*(?:המיסים|לרשות|דיווח)", re.UNICODE)
 # Pattern B: anchor then colon then number on same stretch  e.g. "לרשות המיסים: 2188"
+# Also handles compound labels: "רשות המיסים: ...", "דיווח התרומה: ...", "אישור דיווח: ..."
 _TAX_ANCHOR_COLON = re.compile(
-    r"(?:המיסים|לרשות)[^\n:]{0,50}:\s*(\d{3,8})\b", re.UNICODE
+    r"(?:המיסים|לרשות|רשות\s+המיסים|דיווח\s+התרומה|אישור\s+דיווח)[^\n:]{0,60}:\s*(\d{3,8})\b",
+    re.UNICODE,
 )
 # Pattern C: anchor on line, number on next line  e.g. "תושרל םיסימה\n32830"
 # (reversed forms appear when the normalizer encounters already-correct PDF text)
 _TAX_ANCHOR_NUM_AFTER = re.compile(
-    r"(?:תושרל|םיסימה|המיסים|לרשות)[^\n]*\n\s*(\d{3,8})\b", re.UNICODE
+    r"(?:תושרל|םיסימה|המיסים|לרשות|רשות\s+המיסים|דיווח\s+התרומה|אישור\s+דיווח)[^\n]*\n\s*(\d{3,8})\b",
+    re.UNICODE,
 )
 
 _HEBREW_ONLY = re.compile(r'^[א-ת\s"\']+$', re.UNICODE)
 _FILENAME_DATE = re.compile(r"^(\d{2})_(\d{2})_(\d{2})__")
 _FILENAME_TRAILING_NUM = re.compile(r"_(\d+)(?:\.[^.]+)?$")
+# Receipt number text fallbacks (used only when filename yields nothing)
+# Specific phrase first: "קבלה תרומה 80806" / "מקור קבלה תרומה 80553"
+_RECEIPT_NUM_DONATION = re.compile(r"(?:מקור\s+)?קבלה\s+תרומה\s+(\d{4,8})\b", re.UNICODE)
+# Generic label fallback: "מספר קבלה: 80806" / "קבלה מס' 80806" / "קבלה מספר 80806"
+_RECEIPT_NUM_LABEL = re.compile(
+    r"(?:מספר\s+קבלה|קבלה\s+(?:מס'?|מספר))\s*:?\s*(\d{4,8})\b", re.UNICODE
+)
 
 _FIELD_HE = {
     "amount": "סכום",
@@ -94,7 +104,7 @@ def _find_registration_number(text: str) -> str | None:
     lines = text.split("\n")
     for i, line in enumerate(lines):
         if _ASSOC_ANCHOR.search(line):
-            window = "\n".join(lines[max(0, i - 2) : i + 3])
+            window = "\n".join(lines[max(0, i - 5) : i + 6])
             m = _NINE_DIGITS.search(window)
             if m:
                 return m.group(1)
@@ -105,6 +115,16 @@ def _find_registration_number(text: str) -> str | None:
 def _find_receipt_number_from_filename(file_path: Path) -> str | None:
     m = _FILENAME_TRAILING_NUM.search(file_path.stem)
     return m.group(1) if m else None
+
+
+def _find_receipt_number_in_text(text: str) -> str | None:
+    m = _RECEIPT_NUM_DONATION.search(text)
+    if m:
+        return m.group(1)
+    m = _RECEIPT_NUM_LABEL.search(text)
+    if m:
+        return m.group(1)
+    return None
 
 
 def _find_tax_report_number(text: str) -> str | None:
@@ -122,7 +142,7 @@ def _find_tax_report_number(text: str) -> str | None:
 
 def _find_organization_name(text: str) -> str | None:
     lines = [l.strip() for l in text.split("\n") if l.strip()]
-    for line in lines[:10]:
+    for line in lines[:15]:
         if _HEBREW_ONLY.match(line) and len(line) >= 4:
             return line
     return None
@@ -134,7 +154,11 @@ def extract_metadata(normalized_text: str, file_path: Path) -> ReceiptMetadata:
 
     meta.organization_name = _find_organization_name(normalized_text) or ""
     meta.registration_number = _find_registration_number(normalized_text) or ""
-    meta.receipt_number = _find_receipt_number_from_filename(file_path) or ""
+    meta.receipt_number = (
+        _find_receipt_number_from_filename(file_path)
+        or _find_receipt_number_in_text(normalized_text)
+        or ""
+    )
     meta.tax_report_number = _find_tax_report_number(normalized_text) or ""
     meta.amount = _find_amount(normalized_text) or ""
 

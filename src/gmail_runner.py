@@ -22,8 +22,6 @@ def run_gmail(
     print()
 
     results = []
-    processed_count = 0
-    skipped_count = 0
 
     for email in emails:
         message_id = email.get("message_id", "unknown")
@@ -35,7 +33,6 @@ def run_gmail(
                 "status": "skipped_duplicate",
                 "dry_run": dry_run,
             })
-            skipped_count += 1
             continue
 
         detection = detect_donation_email(email)
@@ -49,7 +46,6 @@ def run_gmail(
                 "planned_paths": [],
                 "dry_run": dry_run,
             })
-            skipped_count += 1
             continue
 
         date_value = email.get("date", "")
@@ -96,7 +92,6 @@ def run_gmail(
                 "skipped_attachments": skipped_attachments,
                 "dry_run": dry_run,
             })
-            skipped_count += 1
             continue
 
         dry_run_label = " [DRY RUN]" if dry_run else ""
@@ -117,9 +112,4 @@ def run_gmail(
             "skipped_attachments": skipped_attachments,
             "dry_run": dry_run,
         })
-        processed_count += 1
-
-    print()
-    print(f"[GMAIL] Done. {processed_count} processed, {skipped_count} skipped (dry_run={dry_run})")
-
     return results
