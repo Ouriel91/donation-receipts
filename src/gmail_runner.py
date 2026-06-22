@@ -2,6 +2,7 @@ from pathlib import Path
 
 from src.attachment_saver import plan_receipt_path, save_attachment
 from src.manifest import was_processed, mark_processed
+from src.pdf_donation_validator import is_donation_pdf
 from src.providers.gmail_provider import GmailProvider
 from src.receipt_detector import detect_donation_email
 
@@ -76,6 +77,14 @@ def run_gmail(
                 except Exception as e:
                     skipped_attachments.append(f"download failed for {filename}: {e}")
                     continue
+
+                if filename.lower().endswith(".pdf"):
+                    valid, reason = is_donation_pdf(content)
+                    if not valid:
+                        skipped_attachments.append(
+                            f"PDF content rejected ({reason}): {filename}"
+                        )
+                        continue
 
             save_attachment(content, target_path, dry_run=dry_run)
             planned_paths.append(str(target_path))

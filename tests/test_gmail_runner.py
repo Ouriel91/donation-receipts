@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -46,6 +46,19 @@ DONATION_UNSUPPORTED_ATTACHMENT = {
         {"filename": "receipt.exe", "content_type": "application/octet-stream", "attachment_id": "att004"}
     ],
 }
+
+DONATION_JPG_ATTACHMENT = {
+    "message_id": "msg_g05",
+    "subject": "תודה על תרומתך",
+    "from": "donations@example.org",
+    "date": "2026-05-24",
+    "body": "מצורפת קבלה עבור תרומתך.",
+    "attachments": [
+        {"filename": "receipt.jpg", "content_type": "image/jpeg", "attachment_id": "att005"}
+    ],
+}
+
+_VALIDATOR = "src.gmail_runner.is_donation_pdf"
 
 
 def make_mock_provider(
@@ -95,8 +108,9 @@ class TestRunGmail:
         receipts_dir = tmp_path / "receipts"
         manifest_path = tmp_path / "manifest.json"
 
-        run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
-        results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
+        with patch(_VALIDATOR, return_value=(True, "mocked")):
+            run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
+            results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
 
         assert results[0]["status"] == "skipped_duplicate"
 
@@ -132,7 +146,8 @@ class TestRunGmail:
         provider = make_mock_provider(account_dir, [DONATION_EMAIL])
         manifest_path = tmp_path / "manifest.json"
 
-        run_gmail(provider, tmp_path / "receipts", manifest_path, dry_run=False)
+        with patch(_VALIDATOR, return_value=(True, "mocked")):
+            run_gmail(provider, tmp_path / "receipts", manifest_path, dry_run=False)
 
         assert manifest_path.exists()
         entries = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -144,7 +159,8 @@ class TestRunGmail:
         account_dir = tmp_path / "myaccount"
         provider = make_mock_provider(account_dir, [DONATION_EMAIL])
 
-        run_gmail(provider, tmp_path / "receipts", tmp_path / "manifest.json", dry_run=False)
+        with patch(_VALIDATOR, return_value=(True, "mocked")):
+            run_gmail(provider, tmp_path / "receipts", tmp_path / "manifest.json", dry_run=False)
 
         provider.download_attachment.assert_called_once_with("msg_g01", "att001")
 
@@ -161,8 +177,9 @@ class TestRunGmail:
         receipts_dir = tmp_path / "receipts"
         manifest_path = tmp_path / "manifest.json"
 
-        run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
-        results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False, reprocess=True)
+        with patch(_VALIDATOR, return_value=(True, "mocked")):
+            run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
+            results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False, reprocess=True)
 
         assert results[0]["status"] != "skipped_duplicate"
         assert len(results[0]["planned_paths"]) > 0
@@ -172,11 +189,11 @@ class TestRunGmail:
         receipts_dir = tmp_path / "receipts"
         manifest_path = tmp_path / "manifest.json"
 
-        run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
-        for f in receipts_dir.rglob("*.pdf"):
-            f.unlink()
-
-        results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False, reprocess=True)
+        with patch(_VALIDATOR, return_value=(True, "mocked")):
+            run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False)
+            for f in receipts_dir.rglob("*.pdf"):
+                f.unlink()
+            results = run_gmail(make_mock_provider(account_dir, [DONATION_EMAIL]), receipts_dir, manifest_path, dry_run=False, reprocess=True)
 
         assert results[0]["status"] != "skipped_duplicate"
         assert len(list(receipts_dir.rglob("*.pdf"))) > 0
@@ -194,3 +211,26 @@ class TestRunGmail:
         assert results[0]["status"] == "skipped_no_supported_attachments"
         assert any("download failed" in r for r in results[0]["skipped_attachments"])
         assert not manifest_path.exists()
+
+    def test_pdf_content_rejected_skips_attachment(self, tmp_path):
+        account_dir = tmp_path / "myaccount"
+        provider = make_mock_provider(account_dir, [DONATION_EMAIL])
+        manifest_path = tmp_path / "manifest.json"
+
+        with patch(_VALIDATOR, return_value=(False, "rejected: invoice")):
+            results = run_gmail(
+                provider, tmp_path / "receipts", manifest_path, dry_run=False
+            )
+
+        assert results[0]["status"] == "skipped_no_supported_attachments"
+        assert any("PDF content rejected" in r for r in results[0]["skipped_attachments"])
+        assert not manifest_path.exists()
+
+    def test_non_pdf_attachment_not_validated(self, tmp_path):
+        account_dir = tmp_path / "myaccount"
+        provider = make_mock_provider(account_dir, [DONATION_JPG_ATTACHMENT])
+
+        with patch(_VALIDATOR) as mock_validator:
+            run_gmail(provider, tmp_path / "receipts", tmp_path / "manifest.json", dry_run=False)
+
+        mock_validator.assert_not_called()
