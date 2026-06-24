@@ -70,6 +70,7 @@ class ReceiptMetadata:
     amount: str = ""
     extraction_status: str = STATUS_NEEDS_REVIEW
     notes: str = ""
+    account: str = ""   # set by receipt_summary, not by extract_metadata
 
 
 def _find_date_in_text(text: str) -> str | None:

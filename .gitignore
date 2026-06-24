@@ -33,6 +33,7 @@ secrets/*
 
 accounts/**/token.json
 accounts/**/credentials.json
+accounts/*/config.json
 
 # =========================
 # Local runtime data

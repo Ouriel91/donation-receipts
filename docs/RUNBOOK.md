@@ -178,6 +178,44 @@ source PDF.
 
 ---
 
+## Per-Account Config
+
+Each account can have an optional private config file that controls how the summary workbook displays the account name and (in a future ticket) validates the donor on each receipt.
+
+### File location
+
+```
+accounts/<account>/config.json
+```
+
+This file is excluded from Git via `.gitignore` (`accounts/*/config.json`). Create it manually and never commit it.
+
+### Schema
+
+```json
+{
+  "display_name": "Primary",
+  "expected_donor_names": [
+    "ראובן כהן"
+  ],
+  "expected_donor_ids": [
+    "000000001"
+  ]
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `display_name` | No | Human-readable name shown in the "חשבון" column of the workbook. Defaults to the account folder name if omitted. |
+| `expected_donor_names` | No | Reserved for donor validation (not yet active). List of name forms as they appear on receipts. |
+| `expected_donor_ids` | No | Reserved for donor validation (not yet active). List of Israeli ID numbers (9 digits each). |
+
+### Effect on the workbook
+
+When `config.json` is present, the `חשבון` column in the Excel workbook shows `display_name`. When the file is absent, the account folder name is used as a fallback.
+
+---
+
 ## Gmail Setup (Legacy Placeholder — now implemented above)
 
 ### Prerequisites

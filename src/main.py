@@ -171,12 +171,15 @@ def main():
         if not args.year:
             print("--year is required for summary mode")
             sys.exit(1)
+        from src.account_config import load_account_config
         from src.receipt_summary import generate_summary_workbook
+        config = load_account_config(ACCOUNTS_DIR, args.account)
         output_path, counts = generate_summary_workbook(
             receipts_dir=RECEIPTS_DIR,
             reports_dir=REPORTS_DIR,
             account=args.account,
             year=args.year,
+            config=config,
         )
         _print_summary_stats(output_path, counts, account=args.account, year=args.year)
     else:
