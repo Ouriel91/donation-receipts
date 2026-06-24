@@ -80,29 +80,30 @@ def _capture_summary(counts, account="test", year=2026) -> str:
     return buf.getvalue()
 
 
-def test_accuracy_full():
-    output = _capture_summary({"ok": 20, "partial": 3, "needs_review": 1})
-    assert "83.3%" in output
+def test_usability_full():
+    # (ready + warning) / total = (20 + 3) / 24 = 95.8%
+    output = _capture_summary({"ready": 20, "warning": 3, "critical": 1})
+    assert "95.8%" in output
 
 
-def test_accuracy_all_ok():
-    output = _capture_summary({"ok": 5})
+def test_usability_all_ready():
+    output = _capture_summary({"ready": 5})
     assert "100.0%" in output
 
 
-def test_accuracy_zero_total():
+def test_usability_zero_total():
     output = _capture_summary({})
     assert "N/A" in output
 
 
 def test_summary_shows_account_and_year():
-    output = _capture_summary({"ok": 1}, account="primary", year=2026)
+    output = _capture_summary({"ready": 1}, account="primary", year=2026)
     assert "primary" in output
     assert "2026" in output
 
 
-def test_summary_shows_all_status_counts():
-    output = _capture_summary({"ok": 10, "partial": 3, "needs_review": 2})
+def test_summary_shows_all_severity_counts():
+    output = _capture_summary({"ready": 10, "warning": 3, "critical": 2})
     assert "10" in output
     assert "3" in output
     assert "2" in output

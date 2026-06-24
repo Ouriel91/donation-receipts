@@ -29,6 +29,7 @@ COLUMNS = [
     "donor_name",
     "donor_id",
     "donor_match",
+    "severity",
     "extraction_status",
     "notes",
 ]
@@ -45,6 +46,7 @@ COLUMN_HEADERS_HE: dict[str, str] = {
     "donor_name": 'שם תורם שזוהה',
     "donor_id": 'ת"ז תורם שזוהתה',
     "donor_match": "התאמת תורם",
+    "severity": "חומרה",
     "extraction_status": "סטטוס",
     "notes": "הערות",
 }
@@ -59,6 +61,20 @@ _DONOR_MATCH_HE: dict[str, str] = {
     "matched": "התאמה",
     "not_detected": "לא זוהה",
     "mismatch": "אי התאמה",
+}
+
+_SEVERITY_HE: dict[str, str] = {
+    "ready": "מוכן",
+    "warning": "דורש תשומת לב",
+    "critical": "בעיה קריטית",
+}
+
+_CRITICAL_FIELDS_HE: dict[str, str] = {
+    "amount": "סכום",
+    "receipt_date": "תאריך",
+    "receipt_number": "מספר קבלה",
+    "registration_number": "מספר עמותה",
+    "tax_report_number": "מספר אישור דיווח",
 }
 
 _MONTH_SHEET_NAMES: dict[str, str] = {
@@ -93,6 +109,7 @@ def _build_row(
     pdf_path: Path,
     account: str,
     config: AccountConfig | None,
+    year: int,
 ) -> ReceiptMetadata:
     try:
         raw_text = extract_text_from_pdf(pdf_path)
@@ -106,9 +123,14 @@ def _build_row(
         )
     meta.account = config.display_name if config else account
     meta.donor_match = compute_donor_match(meta.donor_id, meta.donor_name, config)
+    meta.severity = compute_severity(meta, year, config)
+
+    # Replace generic "חסר: ..." extraction notes with severity-categorised equivalents.
+    surviving_notes = [n for n in meta.notes.split("; ") if n and not n.startswith("חסר: ")]
+    field_notes = _severity_field_notes(meta, year)
     donor_note = _donor_match_note(meta.donor_id, meta.donor_name, config, meta.donor_match)
-    if donor_note:
-        meta.notes = "; ".join(filter(None, [meta.notes, donor_note]))
+    meta.notes = "; ".join(filter(None, field_notes + surviving_notes + [donor_note]))
+
     return meta
 
 
@@ -151,12 +173,51 @@ def _donor_match_note(
     return ""
 
 
+def compute_severity(
+    meta: ReceiptMetadata,
+    year: int,
+    config: AccountConfig | None,
+) -> str:
+    if not meta.amount or not meta.receipt_date or not meta.receipt_number or not meta.registration_number:
+        return "critical"
+    if year >= 2026 and not meta.tax_report_number:
+        return "critical"
+    if meta.donor_match == "mismatch":
+        return "critical"
+    if (
+        meta.donor_match == "not_detected"
+        and config
+        and (config.expected_donor_ids or config.expected_donor_names)
+    ):
+        return "warning"
+    if not meta.organization_name:
+        return "warning"
+    return "ready"
+
+
+def _severity_field_notes(meta: ReceiptMetadata, year: int) -> list[str]:
+    notes: list[str] = []
+    for field in ("amount", "receipt_date", "receipt_number", "registration_number"):
+        if not getattr(meta, field):
+            notes.append(f"שדה חובה חסר: {_CRITICAL_FIELDS_HE[field]}")
+    if not meta.tax_report_number:
+        if year >= 2026:
+            notes.append(f"שדה חובה חסר: {_CRITICAL_FIELDS_HE['tax_report_number']}")
+        else:
+            notes.append("שדה לא נדרש לשנת מס זו")
+    if not meta.organization_name and meta.registration_number:
+        notes.append("שדה אופציונלי חסר: שם עמותה")
+    return notes
+
+
 def _cell_value(col: str, meta: ReceiptMetadata) -> object:
     value = getattr(meta, col)
     if col == "extraction_status":
         return _STATUS_HE.get(value, value)
     if col == "donor_match":
         return _DONOR_MATCH_HE.get(value, value)
+    if col == "severity":
+        return _SEVERITY_HE.get(value, value)
     return value
 
 
@@ -166,6 +227,7 @@ def _write_month_sheet(
     pdfs: list[Path],
     account: str,
     config: AccountConfig | None,
+    year: int,
 ) -> dict[str, int]:
     sheet_title = _MONTH_SHEET_NAMES.get(month_folder, month_folder)
     ws = wb.create_sheet(title=sheet_title)
@@ -179,8 +241,8 @@ def _write_month_sheet(
 
     counts: dict[str, int] = {}
     for row_idx, pdf_path in enumerate(pdfs, start=2):
-        meta = _build_row(pdf_path, account, config)
-        counts[meta.extraction_status] = counts.get(meta.extraction_status, 0) + 1
+        meta = _build_row(pdf_path, account, config, year)
+        counts[meta.severity] = counts.get(meta.severity, 0) + 1
         for col_idx, col in enumerate(COLUMNS, start=1):
             ws.cell(row=row_idx, column=col_idx, value=_cell_value(col, meta))
 
@@ -214,7 +276,7 @@ def generate_summary_workbook(
         _write_empty_summary_sheet(wb, account, year)
     else:
         for month_folder, pdfs in month_entries:
-            counts = _write_month_sheet(wb, month_folder, pdfs, account, config)
+            counts = _write_month_sheet(wb, month_folder, pdfs, account, config, year)
             for status, n in counts.items():
                 total_counts[status] = total_counts.get(status, 0) + n
 
