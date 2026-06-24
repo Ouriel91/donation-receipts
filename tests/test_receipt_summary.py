@@ -8,6 +8,7 @@ from src.account_config import AccountConfig
 from src.receipt_summary import (
     COLUMN_HEADERS_HE,
     COLUMNS,
+    compute_donor_match,
     generate_summary_workbook,
 )
 
@@ -275,3 +276,160 @@ def test_account_column_falls_back_to_account_arg_when_config_none(tmp_path):
     ws = wb["מאי"]
     account_col = COLUMNS.index("account") + 1
     assert ws.cell(row=2, column=account_col).value == "myaccount"
+
+
+# ---------------------------------------------------------------------------
+# compute_donor_match — unit tests (pure function, no PDF needed)
+# ---------------------------------------------------------------------------
+
+
+def _cfg(*, ids=None, names=None) -> AccountConfig:
+    return AccountConfig(
+        display_name="Test",
+        expected_donor_ids=ids or [],
+        expected_donor_names=names or [],
+    )
+
+
+def test_donor_match_matched_by_id():
+    assert compute_donor_match("123456789", "", _cfg(ids=["123456789"])) == "matched"
+
+
+def test_donor_match_mismatch_by_id():
+    assert compute_donor_match("999999999", "", _cfg(ids=["123456789"])) == "mismatch"
+
+
+def test_donor_match_id_falls_through_to_name_when_no_id_extracted():
+    # expected_donor_ids configured but no donor_id extracted → name check
+    assert (
+        compute_donor_match(
+            "", "ישראל ישראלי", _cfg(ids=["123456789"], names=["ישראל ישראלי"])
+        )
+        == "matched"
+    )
+
+
+def test_donor_match_matched_by_name_exact():
+    assert compute_donor_match("", "ישראל ישראלי", _cfg(names=["ישראל ישראלי"])) == "matched"
+
+
+def test_donor_match_matched_by_name_substring_detected_in_expected():
+    # detected name is substring of expected name
+    assert compute_donor_match("", "ישראל", _cfg(names=["ישראל ישראלי"])) == "matched"
+
+
+def test_donor_match_matched_by_name_expected_in_detected():
+    # expected name is substring of detected name
+    assert compute_donor_match("", "ישראל ישראלי הגדול", _cfg(names=["ישראל ישראלי"])) == "matched"
+
+
+def test_donor_match_matched_by_name_case_insensitive():
+    assert compute_donor_match("", "israel israely", _cfg(names=["Israel Israely"])) == "matched"
+
+
+def test_donor_match_mismatch_by_name():
+    assert compute_donor_match("", "שם אחר", _cfg(names=["ישראל ישראלי"])) == "mismatch"
+
+
+def test_donor_match_not_detected_no_config():
+    assert compute_donor_match("123456789", "Some Name", None) == "not_detected"
+
+
+def test_donor_match_not_detected_empty_expectation_lists():
+    assert compute_donor_match("123456789", "Some Name", _cfg()) == "not_detected"
+
+
+def test_donor_match_not_detected_no_donor_data_extracted():
+    assert compute_donor_match("", "", _cfg(names=["ישראל ישראלי"])) == "not_detected"
+
+
+# ---------------------------------------------------------------------------
+# donor_match column — structure tests
+# ---------------------------------------------------------------------------
+
+
+def test_donor_match_column_in_columns():
+    assert "donor_match" in COLUMNS
+
+
+def test_donor_match_column_has_hebrew_header():
+    assert COLUMN_HEADERS_HE["donor_match"] == "התאמת תורם"
+
+
+def test_donor_match_column_after_donor_id():
+    assert COLUMNS.index("donor_match") == COLUMNS.index("donor_id") + 1
+
+
+# ---------------------------------------------------------------------------
+# donor_match column — workbook integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_donor_match_header_appears_in_workbook(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    headers = [ws.cell(row=1, column=i).value for i in range(1, len(COLUMNS) + 1)]
+    assert "התאמת תורם" in headers
+
+
+def test_donor_match_shows_לא_זוהה_when_no_config(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    col = COLUMNS.index("donor_match") + 1
+    for row_idx in range(2, ws.max_row + 1):
+        assert ws.cell(row=row_idx, column=col).value == "לא זוהה"
+
+
+def test_donor_match_shows_לא_זוהה_when_config_has_expectations_but_no_donor_in_pdf(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+    config = AccountConfig(display_name="Test", expected_donor_names=["ישראל ישראלי"])
+
+    output_path, _ = generate_summary_workbook(
+        receipts_dir, reports_dir, "testaccount", 2026, config=config
+    )
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    col = COLUMNS.index("donor_match") + 1
+    for row_idx in range(2, ws.max_row + 1):
+        assert ws.cell(row=row_idx, column=col).value == "לא זוהה"
+
+
+def test_donor_match_note_appended_when_expectations_configured_but_no_donor_detected(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+    config = AccountConfig(display_name="Test", expected_donor_names=["ישראל ישראלי"])
+
+    output_path, _ = generate_summary_workbook(
+        receipts_dir, reports_dir, "testaccount", 2026, config=config
+    )
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    notes_col = COLUMNS.index("notes") + 1
+    notes_values = [ws.cell(row=r, column=notes_col).value or "" for r in range(2, ws.max_row + 1)]
+    assert all("לא זוהה תורם" in v for v in notes_values)
+
+
+def test_donor_match_no_note_when_no_config(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    notes_col = COLUMNS.index("notes") + 1
+    notes_values = [ws.cell(row=r, column=notes_col).value or "" for r in range(2, ws.max_row + 1)]
+    assert not any("לא זוהה תורם" in v for v in notes_values)
