@@ -4,6 +4,7 @@ import openpyxl
 import pytest
 from fpdf import FPDF
 
+from src.account_config import AccountConfig
 from src.receipt_summary import (
     COLUMN_HEADERS_HE,
     COLUMNS,
@@ -185,3 +186,58 @@ def test_overwrite_existing_workbook(tmp_path):
 
     assert output_path2 == output_path
     assert output_path2.exists()
+
+
+# ---------------------------------------------------------------------------
+# account column
+# ---------------------------------------------------------------------------
+
+
+def test_account_column_in_columns():
+    assert "account" in COLUMNS
+
+
+def test_account_column_has_hebrew_header():
+    assert COLUMN_HEADERS_HE["account"] == "חשבון"
+
+
+def test_account_column_value_when_no_config(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    account_col = COLUMNS.index("account") + 1
+    assert ws.cell(row=2, column=account_col).value == "testaccount"
+
+
+def test_account_column_uses_display_name_from_config(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+    config = AccountConfig(display_name="My Primary Account")
+
+    output_path, _ = generate_summary_workbook(
+        receipts_dir, reports_dir, "testaccount", 2026, config=config
+    )
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    account_col = COLUMNS.index("account") + 1
+    for row_idx in range(2, ws.max_row + 1):
+        assert ws.cell(row=row_idx, column=account_col).value == "My Primary Account"
+
+
+def test_account_column_falls_back_to_account_arg_when_config_none(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "myaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(
+        receipts_dir, reports_dir, "myaccount", 2026, config=None
+    )
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    account_col = COLUMNS.index("account") + 1
+    assert ws.cell(row=2, column=account_col).value == "myaccount"

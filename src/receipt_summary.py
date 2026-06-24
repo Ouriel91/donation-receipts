@@ -6,6 +6,7 @@ import openpyxl
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+from src.account_config import AccountConfig
 from src.attachment_saver import MONTH_NAMES
 from src.hebrew_text_normalizer import normalize_hebrew_text
 from src.pdf_text_extractor import PdfExtractionError, extract_text_from_pdf
@@ -17,6 +18,7 @@ from src.receipt_metadata_extractor import (
 
 # Internal field names — used for getattr(meta, col) and as dict keys.
 COLUMNS = [
+    "account",
     "file_name",
     "organization_name",
     "registration_number",
@@ -29,6 +31,7 @@ COLUMNS = [
 ]
 
 COLUMN_HEADERS_HE: dict[str, str] = {
+    "account": "חשבון",
     "file_name": "שם קובץ",
     "organization_name": "שם עמותה",
     "registration_number": "מספר עמותה",
@@ -74,17 +77,25 @@ def iter_month_pdf_files(receipts_dir: Path, account: str, year: int):
             yield MONTH_NAMES[month_num], pdfs
 
 
-def _build_row(pdf_path: Path) -> ReceiptMetadata:
+def _build_row(
+    pdf_path: Path,
+    account: str,
+    config: AccountConfig | None,
+) -> ReceiptMetadata:
     try:
         raw_text = extract_text_from_pdf(pdf_path)
         normalized = normalize_hebrew_text(raw_text)
     except Exception:
-        return ReceiptMetadata(
+        meta = ReceiptMetadata(
             file_name=pdf_path.name,
             extraction_status=STATUS_NEEDS_REVIEW,
             notes="לא ניתן לקרוא את הקובץ",
         )
-    return extract_metadata(normalized, pdf_path)
+        meta.account = config.display_name if config else account
+        return meta
+    meta = extract_metadata(normalized, pdf_path)
+    meta.account = config.display_name if config else account
+    return meta
 
 
 def _cell_value(col: str, meta: ReceiptMetadata) -> object:
@@ -95,7 +106,11 @@ def _cell_value(col: str, meta: ReceiptMetadata) -> object:
 
 
 def _write_month_sheet(
-    wb: openpyxl.Workbook, month_folder: str, pdfs: list[Path]
+    wb: openpyxl.Workbook,
+    month_folder: str,
+    pdfs: list[Path],
+    account: str,
+    config: AccountConfig | None,
 ) -> dict[str, int]:
     sheet_title = _MONTH_SHEET_NAMES.get(month_folder, month_folder)
     ws = wb.create_sheet(title=sheet_title)
@@ -109,7 +124,7 @@ def _write_month_sheet(
 
     counts: dict[str, int] = {}
     for row_idx, pdf_path in enumerate(pdfs, start=2):
-        meta = _build_row(pdf_path)
+        meta = _build_row(pdf_path, account, config)
         counts[meta.extraction_status] = counts.get(meta.extraction_status, 0) + 1
         for col_idx, col in enumerate(COLUMNS, start=1):
             ws.cell(row=row_idx, column=col_idx, value=_cell_value(col, meta))
@@ -132,6 +147,7 @@ def generate_summary_workbook(
     reports_dir: Path,
     account: str,
     year: int,
+    config: AccountConfig | None = None,
 ) -> tuple[Path, dict[str, int]]:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -143,7 +159,7 @@ def generate_summary_workbook(
         _write_empty_summary_sheet(wb, account, year)
     else:
         for month_folder, pdfs in month_entries:
-            counts = _write_month_sheet(wb, month_folder, pdfs)
+            counts = _write_month_sheet(wb, month_folder, pdfs, account, config)
             for status, n in counts.items():
                 total_counts[status] = total_counts.get(status, 0) + n
 
