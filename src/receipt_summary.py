@@ -28,6 +28,7 @@ COLUMNS = [
     "amount",
     "donor_name",
     "donor_id",
+    "donor_match",
     "extraction_status",
     "notes",
 ]
@@ -43,6 +44,7 @@ COLUMN_HEADERS_HE: dict[str, str] = {
     "amount": "סכום",
     "donor_name": 'שם תורם שזוהה',
     "donor_id": 'ת"ז תורם שזוהתה',
+    "donor_match": "התאמת תורם",
     "extraction_status": "סטטוס",
     "notes": "הערות",
 }
@@ -51,6 +53,12 @@ _STATUS_HE: dict[str, str] = {
     "ok": "תקין",
     "partial": "חלקי",
     "needs_review": "לבדיקה",
+}
+
+_DONOR_MATCH_HE: dict[str, str] = {
+    "matched": "התאמה",
+    "not_detected": "לא זוהה",
+    "mismatch": "אי התאמה",
 }
 
 _MONTH_SHEET_NAMES: dict[str, str] = {
@@ -89,23 +97,66 @@ def _build_row(
     try:
         raw_text = extract_text_from_pdf(pdf_path)
         normalized = normalize_hebrew_text(raw_text)
+        meta = extract_metadata(normalized, pdf_path)
     except Exception:
         meta = ReceiptMetadata(
             file_name=pdf_path.name,
             extraction_status=STATUS_NEEDS_REVIEW,
             notes="לא ניתן לקרוא את הקובץ",
         )
-        meta.account = config.display_name if config else account
-        return meta
-    meta = extract_metadata(normalized, pdf_path)
     meta.account = config.display_name if config else account
+    meta.donor_match = compute_donor_match(meta.donor_id, meta.donor_name, config)
+    donor_note = _donor_match_note(meta.donor_id, meta.donor_name, config, meta.donor_match)
+    if donor_note:
+        meta.notes = "; ".join(filter(None, [meta.notes, donor_note]))
     return meta
+
+
+def compute_donor_match(
+    donor_id: str,
+    donor_name: str,
+    config: AccountConfig | None,
+) -> str:
+    if config and config.expected_donor_ids:
+        if donor_id and donor_id in config.expected_donor_ids:
+            return "matched"
+        if donor_id:
+            return "mismatch"
+        # donor_id not extracted — fall through to name check
+    if config and config.expected_donor_names:
+        if donor_name:
+            dn = donor_name.lower()
+            for expected in config.expected_donor_names:
+                if dn in expected.lower() or expected.lower() in dn:
+                    return "matched"
+            return "mismatch"
+    return "not_detected"
+
+
+def _donor_match_note(
+    donor_id: str,
+    donor_name: str,  # noqa: ARG001
+    config: AccountConfig | None,
+    match: str,
+) -> str:
+    if match == "matched":
+        return ""
+    if match == "mismatch":
+        if config and config.expected_donor_ids and donor_id:
+            return "תעודת זהות תורם לא תואמת"
+        return "שם תורם לא תואם"
+    # not_detected
+    if config and (config.expected_donor_ids or config.expected_donor_names):
+        return "לא זוהה תורם"
+    return ""
 
 
 def _cell_value(col: str, meta: ReceiptMetadata) -> object:
     value = getattr(meta, col)
     if col == "extraction_status":
         return _STATUS_HE.get(value, value)
+    if col == "donor_match":
+        return _DONOR_MATCH_HE.get(value, value)
     return value
 
 

@@ -81,6 +81,7 @@ class ReceiptMetadata:
     amount: str = ""
     donor_name: str = ""
     donor_id: str = ""
+    donor_match: str = ""
     extraction_status: str = STATUS_NEEDS_REVIEW
     notes: str = ""
     account: str = ""   # set by receipt_summary, not by extract_metadata
