@@ -98,22 +98,23 @@ def _print_summary_stats(
     output_path: Path, counts: dict[str, int], account: str, year: int
 ) -> None:
     total = sum(counts.values())
-    ok = counts.get("ok", 0)
+    ready = counts.get("ready", 0)
+    warning = counts.get("warning", 0)
     if total > 0:
-        accuracy = f"{ok / total * 100:.1f}%"
+        usability = f"{(ready + warning) / total * 100:.1f}%"
     else:
-        accuracy = "N/A"
-    col_w = len("needs_review")
+        usability = "N/A"
+    col_w = len("total_receipts")
     print("\n[summary]")
     print(f"  {'account':<{col_w}} : {account}")
     print(f"  {'year':<{col_w}} : {year}")
     print(f"  {'workbook':<{col_w}} : {output_path}")
     print()
     print(f"  {'total_receipts':<{col_w}} : {total}")
-    print(f"  {'ok':<{col_w}} : {ok}")
-    print(f"  {'partial':<{col_w}} : {counts.get('partial', 0)}")
-    print(f"  {'needs_review':<{col_w}} : {counts.get('needs_review', 0)}")
-    print(f"  {'accuracy (ok rows)':<{col_w}} : {accuracy}")
+    print(f"  {'ready':<{col_w}} : {ready}")
+    print(f"  {'warning':<{col_w}} : {warning}")
+    print(f"  {'critical':<{col_w}} : {counts.get('critical', 0)}")
+    print(f"  {'usability':<{col_w}} : {usability}")
     if not total:
         print("  (no receipts found)")
     print()

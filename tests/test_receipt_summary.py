@@ -5,10 +5,12 @@ import pytest
 from fpdf import FPDF
 
 from src.account_config import AccountConfig
+from src.receipt_metadata_extractor import ReceiptMetadata
 from src.receipt_summary import (
     COLUMN_HEADERS_HE,
     COLUMNS,
     compute_donor_match,
+    compute_severity,
     generate_summary_workbook,
 )
 
@@ -152,7 +154,7 @@ def test_status_values_are_hebrew(tmp_path):
         assert s in ("תקין", "חלקי", "לבדיקה"), f"unexpected status: {s}"
 
 
-def test_counts_use_english_keys(tmp_path):
+def test_counts_use_severity_keys(tmp_path):
     receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
     reports_dir = tmp_path / "reports"
 
@@ -160,9 +162,9 @@ def test_counts_use_english_keys(tmp_path):
 
     total = sum(counts.values())
     assert total == 5  # 2 May + 3 June
-    # Keys are English (used by main.py for printing)
+    # Keys are severity values (used by main.py for printing)
     for key in counts:
-        assert key in ("ok", "partial", "needs_review")
+        assert key in ("ready", "warning", "critical")
 
 
 def test_empty_year_creates_סיכום_sheet(tmp_path):
@@ -433,3 +435,146 @@ def test_donor_match_no_note_when_no_config(tmp_path):
     notes_col = COLUMNS.index("notes") + 1
     notes_values = [ws.cell(row=r, column=notes_col).value or "" for r in range(2, ws.max_row + 1)]
     assert not any("לא זוהה תורם" in v for v in notes_values)
+
+
+# ---------------------------------------------------------------------------
+# compute_severity — unit tests (pure function, no PDF needed)
+# ---------------------------------------------------------------------------
+
+
+def _meta(**kwargs) -> ReceiptMetadata:
+    defaults = dict(
+        file_name="test.pdf",
+        amount="100",
+        receipt_date="01/01/2026",
+        receipt_number="12345",
+        registration_number="123456789",
+        tax_report_number="5678",
+        organization_name="עמותה",
+        donor_name="",
+        donor_id="",
+        donor_match="not_detected",
+    )
+    defaults.update(kwargs)
+    return ReceiptMetadata(**defaults)
+
+
+def test_severity_ready_when_all_fields_present_2026():
+    assert compute_severity(_meta(), 2026, None) == "ready"
+
+
+def test_severity_critical_missing_amount():
+    assert compute_severity(_meta(amount=""), 2026, None) == "critical"
+
+
+def test_severity_critical_missing_receipt_date():
+    assert compute_severity(_meta(receipt_date=""), 2026, None) == "critical"
+
+
+def test_severity_critical_missing_receipt_number():
+    assert compute_severity(_meta(receipt_number=""), 2026, None) == "critical"
+
+
+def test_severity_critical_missing_registration_number():
+    assert compute_severity(_meta(registration_number=""), 2026, None) == "critical"
+
+
+def test_severity_critical_missing_tax_report_number_2026():
+    assert compute_severity(_meta(tax_report_number=""), 2026, None) == "critical"
+
+
+def test_severity_ready_missing_tax_report_number_2025():
+    assert compute_severity(_meta(tax_report_number=""), 2025, None) == "ready"
+
+
+def test_severity_critical_donor_mismatch():
+    assert compute_severity(_meta(donor_match="mismatch"), 2026, None) == "critical"
+
+
+def test_severity_warning_donor_not_detected_with_config_expectations():
+    config = _cfg(names=["ישראל ישראלי"])
+    assert compute_severity(_meta(donor_match="not_detected"), 2026, config) == "warning"
+
+
+def test_severity_ready_donor_not_detected_no_config():
+    assert compute_severity(_meta(donor_match="not_detected"), 2026, None) == "ready"
+
+
+def test_severity_warning_missing_organization_name():
+    assert compute_severity(_meta(organization_name=""), 2026, None) == "warning"
+
+
+# ---------------------------------------------------------------------------
+# severity column — structure tests
+# ---------------------------------------------------------------------------
+
+
+def test_severity_column_in_columns():
+    assert "severity" in COLUMNS
+
+
+def test_severity_column_has_hebrew_header():
+    assert COLUMN_HEADERS_HE["severity"] == "חומרה"
+
+
+def test_severity_column_after_donor_match():
+    assert COLUMNS.index("severity") == COLUMNS.index("donor_match") + 1
+
+
+# ---------------------------------------------------------------------------
+# severity column — workbook integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_severity_header_appears_in_workbook(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    headers = [ws.cell(row=1, column=i).value for i in range(1, len(COLUMNS) + 1)]
+    assert "חומרה" in headers
+
+
+def test_corrupt_pdf_severity_is_critical(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["יוני"]
+    severity_col = COLUMNS.index("severity") + 1
+    severities = [ws.cell(row=r, column=severity_col).value for r in range(2, ws.max_row + 1)]
+    assert "בעיה קריטית" in severities
+
+
+def test_notes_use_severity_categorised_format(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    notes_col = COLUMNS.index("notes") + 1
+    for sheetname in wb.sheetnames:
+        ws = wb[sheetname]
+        for r in range(2, ws.max_row + 1):
+            note = ws.cell(row=r, column=notes_col).value or ""
+            for segment in note.split("; "):
+                assert not segment.startswith("חסר: "), f"old note format in: {note!r}"
+
+
+def test_notes_contain_not_required_for_tax_year_when_2025(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2025)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2025)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    notes_col = COLUMNS.index("notes") + 1
+    notes = [ws.cell(row=r, column=notes_col).value or "" for r in range(2, ws.max_row + 1)]
+    assert all("שדה לא נדרש לשנת מס זו" in v for v in notes)
