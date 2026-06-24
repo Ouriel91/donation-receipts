@@ -309,6 +309,100 @@ def test_receipt_number_filename_takes_precedence_over_text():
     assert meta.receipt_number == "12345"
 
 
+# --- donor extraction ---
+
+def test_donor_id_taz_quoted():
+    text = 'ת"ז: 123456789\nקרן דוגמה\n05/06/2026\n₪200.00'
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_taz_dotted():
+    text = "ת.ז. 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_taz_bare():
+    text = "תז 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_mispar_zehut():
+    text = "מספר זהות: 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_mz():
+    text = "מ.ז. 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_no_anchor():
+    # A bare 9-digit number must NOT be extracted as donor_id (it may be a registration number)
+    text = "קרן דוגמה\nעמותה\n123456789\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == ""
+
+
+def test_donor_name_shem_hatoram():
+    text = "שם התורם: ישראל ישראלי\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == "ישראל ישראלי"
+
+
+def test_donor_name_shem_hameshlem():
+    text = "שם המשלם ישראל ישראלי\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == "ישראל ישראלי"
+
+
+def test_donor_name_shem_male():
+    text = "שם מלא: ישראל ישראלי\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == "ישראל ישראלי"
+
+
+def test_donor_name_lkhvod_inline():
+    text = "לכבוד ישראל ישראלי\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == "ישראל ישראלי"
+
+
+def test_donor_name_lkhvod_next_line():
+    # Salutation on one line, name on the next — common in Israeli receipts
+    text = "לכבוד\nישראל ישראלי\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == "ישראל ישראלי"
+
+
+def test_donor_name_absent():
+    text = "קרן דוגמה\nעמותה\n123456789\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == ""
+
+
+def test_donor_fields_not_in_notes():
+    # Absent donor fields must never appear in notes
+    text = "קרן דוגמה\nעמותה\n123456789\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert "תורם" not in meta.notes
+    assert 'ת"ז' not in meta.notes
+
+
+def test_donor_fields_not_affect_status():
+    # A complete receipt with no donor information must still reach OK/PARTIAL
+    text = "קרן קובי מנדל\nעמותה\n580395051\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.extraction_status != STATUS_NEEDS_REVIEW
+    assert meta.donor_name == ""
+    assert meta.donor_id == ""
+
+
 # --- organization_name: beyond line 10 ---
 
 def test_org_name_beyond_line_10():

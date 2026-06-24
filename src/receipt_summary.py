@@ -26,6 +26,8 @@ COLUMNS = [
     "tax_report_number",
     "receipt_date",
     "amount",
+    "donor_name",
+    "donor_id",
     "extraction_status",
     "notes",
 ]
@@ -39,6 +41,8 @@ COLUMN_HEADERS_HE: dict[str, str] = {
     "tax_report_number": "מספר אישור דיווח",
     "receipt_date": "תאריך",
     "amount": "סכום",
+    "donor_name": 'שם תורם שזוהה',
+    "donor_id": 'ת"ז תורם שזוהתה',
     "extraction_status": "סטטוס",
     "notes": "הערות",
 }

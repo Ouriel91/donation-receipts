@@ -229,6 +229,40 @@ def test_account_column_uses_display_name_from_config(tmp_path):
         assert ws.cell(row=row_idx, column=account_col).value == "My Primary Account"
 
 
+# ---------------------------------------------------------------------------
+# donor columns
+# ---------------------------------------------------------------------------
+
+
+def test_donor_name_column_in_columns():
+    assert "donor_name" in COLUMNS
+
+
+def test_donor_id_column_in_columns():
+    assert "donor_id" in COLUMNS
+
+
+def test_donor_name_column_has_hebrew_header():
+    assert COLUMN_HEADERS_HE["donor_name"] == 'שם תורם שזוהה'
+
+
+def test_donor_id_column_has_hebrew_header():
+    assert COLUMN_HEADERS_HE["donor_id"] == 'ת"ז תורם שזוהתה'
+
+
+def test_donor_columns_appear_in_workbook_header(tmp_path):
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+
+    output_path, _ = generate_summary_workbook(receipts_dir, reports_dir, "testaccount", 2026)
+
+    wb = openpyxl.load_workbook(str(output_path))
+    ws = wb["מאי"]
+    headers = [ws.cell(row=1, column=i).value for i in range(1, len(COLUMNS) + 1)]
+    assert 'שם תורם שזוהה' in headers
+    assert 'ת"ז תורם שזוהתה' in headers
+
+
 def test_account_column_falls_back_to_account_arg_when_config_none(tmp_path):
     receipts_dir = _setup_receipts(tmp_path, "myaccount", 2026)
     reports_dir = tmp_path / "reports"

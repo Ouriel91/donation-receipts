@@ -45,6 +45,17 @@ _RECEIPT_NUM_LABEL = re.compile(
     r"(?:מספר\s+קבלה|קבלה\s+(?:מס'?|מספר))\s*:?\s*(\d{4,8})\b", re.UNICODE
 )
 
+# Donor ID: explicit anchor required — bare 9-digit numbers are also registration numbers.
+_DONOR_ID = re.compile(
+    r'(?:ת"ז|ת\.ז\.|תז|מספר\s+זהות|מ\.ז\.)\s*:?\s*(\d{9})\b',
+    re.UNICODE,
+)
+# Donor name: conservative anchors only; captures rest of line (best-effort).
+_DONOR_NAME = re.compile(
+    r'(?:שם\s+התורם|שם\s+המשלם|שם\s+מלא|לכבוד)\s*:?\s*(.+)',
+    re.UNICODE,
+)
+
 _FIELD_HE = {
     "amount": "סכום",
     "receipt_date": "תאריך",
@@ -68,6 +79,8 @@ class ReceiptMetadata:
     tax_report_number: str = ""
     receipt_date: str = ""
     amount: str = ""
+    donor_name: str = ""
+    donor_id: str = ""
     extraction_status: str = STATUS_NEEDS_REVIEW
     notes: str = ""
     account: str = ""   # set by receipt_summary, not by extract_metadata
@@ -149,6 +162,19 @@ def _find_organization_name(text: str) -> str | None:
     return None
 
 
+def _find_donor_id(text: str) -> str | None:
+    m = _DONOR_ID.search(text)
+    return m.group(1) if m else None
+
+
+def _find_donor_name(text: str) -> str | None:
+    m = _DONOR_NAME.search(text)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    return name if name else None
+
+
 def extract_metadata(normalized_text: str, file_path: Path) -> ReceiptMetadata:
     meta = ReceiptMetadata(file_name=file_path.name)
     notes: list[str] = []
@@ -162,6 +188,8 @@ def extract_metadata(normalized_text: str, file_path: Path) -> ReceiptMetadata:
     )
     meta.tax_report_number = _find_tax_report_number(normalized_text) or ""
     meta.amount = _find_amount(normalized_text) or ""
+    meta.donor_name = _find_donor_name(normalized_text) or ""
+    meta.donor_id = _find_donor_id(normalized_text) or ""
 
     date = _find_date_in_text(normalized_text)
     if date:
