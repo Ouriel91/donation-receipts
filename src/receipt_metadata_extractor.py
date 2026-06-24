@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_DATE_PATTERN = re.compile(r"\b(\d{2})[./](\d{2})[./](\d{4})\b")
+_DATE_PATTERN = re.compile(r"(?<!\d)(\d{2})[./](\d{2})[./](\d{4})(?!\d)")
 
 # Amount: ₪ prefix (standard), or total indicator (normal + normalizer-reversed forms)
 # followed by optional shekel word then digits.
@@ -33,10 +33,16 @@ _TAX_ANCHOR_NUM_AFTER = re.compile(
     r"(?:תושרל|םיסימה|המיסים|לרשות|רשות\s+המיסים|דיווח\s+התרומה|אישור\s+דיווח)[^\n]*\n\s*(\d{3,8})\b",
     re.UNICODE,
 )
+# Pattern D: reversed text where number precedes reversed "מספר" + tax-authority anchor
+# e.g. "73982רפסמ רושיא חוויד המורתה תושרל םיסמה" ← reversed label+number layout
+_TAX_NUM_BEFORE_LABEL = re.compile(
+    r"(\d{3,8})\s*רפסמ\b[^\n]*(?:תושרל|יסמה)", re.UNICODE
+)
 
 _HEBREW_ONLY = re.compile(r'^[א-ת\s"\']+$', re.UNICODE)
 _FILENAME_DATE = re.compile(r"^(\d{2})_(\d{2})_(\d{2})__")
 _FILENAME_TRAILING_NUM = re.compile(r"_(\d+)(?:\.[^.]+)?$")
+_FILENAME_MID_NUM = re.compile(r"_(\d{4,8})_")  # 4-8 digit segment between underscores
 # Receipt number text fallbacks (used only when filename yields nothing)
 # Specific phrase first: "קבלה תרומה 80806" / "מקור קבלה תרומה 80553"
 _RECEIPT_NUM_DONATION = re.compile(r"(?:מקור\s+)?קבלה\s+תרומה\s+(\d{4,8})\b", re.UNICODE)
@@ -44,6 +50,13 @@ _RECEIPT_NUM_DONATION = re.compile(r"(?:מקור\s+)?קבלה\s+תרומה\s+(\d
 _RECEIPT_NUM_LABEL = re.compile(
     r"(?:מספר\s+קבלה|קבלה\s+(?:מס'?|מספר))\s*:?\s*(\d{4,8})\b", re.UNICODE
 )
+# Reversed-text patterns (normalizer reverses already-correct PDF text)
+# e.g. "62376 המורת תלבק רוקמ" ← reversed "מקור קבלה תרומה 62376"
+_RECEIPT_NUM_REVERSED = re.compile(
+    r"(\d{4,8})\s+המורת\s+(?:תלבק|הלבק)(?:\s+רוקמ)?", re.UNICODE
+)
+# e.g. "רוקמ260344הלבק רובע המורת" ← reversed "תרומה עבור קבלה 260344 מקור"
+_RECEIPT_NUM_ADJACENT = re.compile(r"רוקמ(\d{4,8})(?:הלבק|תלבק|רובע)", re.UNICODE)
 
 # Donor ID: explicit anchor required — bare 9-digit numbers are also registration numbers.
 _DONOR_ID = re.compile(
@@ -130,29 +143,27 @@ def _find_registration_number(text: str) -> str | None:
 
 def _find_receipt_number_from_filename(file_path: Path) -> str | None:
     m = _FILENAME_TRAILING_NUM.search(file_path.stem)
+    if m:
+        return m.group(1)
+    m = _FILENAME_MID_NUM.search(file_path.stem)
     return m.group(1) if m else None
 
 
 def _find_receipt_number_in_text(text: str) -> str | None:
-    m = _RECEIPT_NUM_DONATION.search(text)
-    if m:
-        return m.group(1)
-    m = _RECEIPT_NUM_LABEL.search(text)
-    if m:
-        return m.group(1)
+    for pat in (_RECEIPT_NUM_DONATION, _RECEIPT_NUM_LABEL,
+                _RECEIPT_NUM_REVERSED, _RECEIPT_NUM_ADJACENT):
+        m = pat.search(text)
+        if m:
+            return m.group(1)
     return None
 
 
 def _find_tax_report_number(text: str) -> str | None:
-    m = _TAX_NUM_BEFORE.search(text)
-    if m:
-        return m.group(1)
-    m = _TAX_ANCHOR_COLON.search(text)
-    if m:
-        return m.group(1)
-    m = _TAX_ANCHOR_NUM_AFTER.search(text)
-    if m:
-        return m.group(1)
+    for pat in (_TAX_NUM_BEFORE, _TAX_ANCHOR_COLON,
+                _TAX_ANCHOR_NUM_AFTER, _TAX_NUM_BEFORE_LABEL):
+        m = pat.search(text)
+        if m:
+            return m.group(1)
     return None
 
 

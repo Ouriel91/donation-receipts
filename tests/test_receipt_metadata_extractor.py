@@ -403,6 +403,63 @@ def test_donor_fields_not_affect_status():
     assert meta.donor_id == ""
 
 
+# --- date: adjacent to Hebrew chars (real receipt patterns) ---
+
+def test_date_extracted_when_hebrew_precedes_digits():
+    # Real pattern from 03_06_26__מרחבים receipt: date immediately follows Hebrew chars (no space)
+    text = "62376 המורת תלבק רוקמ03/06/2026\nעמותה\n580805984\n₪200"
+    path = Path("receipts/primary/2026/06_June/03_06_26__קבלת_תרומה_62376_מאת.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.receipt_date == "03/06/2026"
+    assert "תאריך מתוך שם הקובץ" not in meta.notes
+
+
+def test_date_extracted_when_hebrew_follows_digits():
+    # Real pattern from 18_05_26__peachgama receipt: date immediately precedes Hebrew chars (no space)
+    text = "18/05/2026ךיראת הקפה\nעמותה\n580537942\n₪100"
+    path = Path("receipts/primary/2026/05_May/18_05_26__peachgama_1234.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.receipt_date == "18/05/2026"
+    assert "תאריך מתוך שם הקובץ" not in meta.notes
+
+
+# --- receipt_number: mid-filename and reversed text (real receipt patterns) ---
+
+def test_receipt_number_mid_filename():
+    # Real pattern: מרחבים receipts have the number mid-stem before Hebrew words
+    text = "עמותה\n580805984\n03/06/2026\n₪200"
+    path = Path("receipts/primary/2026/06_June/03_06_26__קבלת_תרומה_62376_מאת_מרחבים.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.receipt_number == "62376"
+
+
+def test_receipt_number_from_reversed_spaced_text():
+    # Real pattern from מרחבים receipts: "NUM המורת תלבק רוקמ" (reversed "מקור קבלה תרומה NUM")
+    text = "עמותה\n580805984\n03/06/2026\n₪200\n62376 המורת תלבק רוקמ"
+    path = Path("receipts/primary/2026/06_June/receipt.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.receipt_number == "62376"
+
+
+def test_receipt_number_from_adjacent_reversed_text():
+    # Real pattern from peachgama receipts: "רוקמNUMהלבק" (reversed "קבלה NUM מקור")
+    text = "עמותה\n580537942\n18/05/2026\n₪100\n - רוקמ260344הלבק רובע המורת"
+    path = Path("receipts/primary/2026/05_May/receipt.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.receipt_number == "260344"
+
+
+# --- tax_report_number: number before reversed label (real receipt patterns) ---
+
+def test_tax_report_number_before_reversed_label():
+    # Real pattern from 18_05_26__peachgama receipt:
+    # "73982רפסמ רושיא חוויד המורתה תושרל םיסמה" = reversed "המיסים לרשות ... מספר 73982"
+    text = "עמותה\n580537942\n18/05/2026\n₪100\n73982רפסמ רושיא חוויד המורתה תושרל םיסמה"
+    path = Path("receipts/primary/2026/05_May/18_05_26__peachgama_1234.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.tax_report_number == "73982"
+
+
 # --- organization_name: beyond line 10 ---
 
 def test_org_name_beyond_line_10():
