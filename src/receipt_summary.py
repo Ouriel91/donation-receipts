@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import openpyxl
 from openpyxl.styles import Font
@@ -9,12 +10,113 @@ from openpyxl.utils import get_column_letter
 from src.account_config import AccountConfig
 from src.attachment_saver import MONTH_NAMES
 from src.hebrew_text_normalizer import normalize_hebrew_text
-from src.pdf_text_extractor import PdfExtractionError, extract_text_from_pdf
+from src.pdf_text_extractor import (
+    PdfExtractionError,
+    extract_text_from_pdf,
+    extract_text_from_pdf_pymupdf,
+)
 from src.receipt_metadata_extractor import (
     STATUS_NEEDS_REVIEW,
+    STATUS_OK,
+    STATUS_PARTIAL,
     ReceiptMetadata,
     extract_metadata,
 )
+
+_AMOUNT_STRIP_RE = re.compile(r"[₪\s,]")
+
+
+def _parse_amount(value: str) -> float | None:
+    if not value:
+        return None
+    cleaned = _AMOUNT_STRIP_RE.sub("", value)
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _find_config_donor_id(text: str, expected_ids: list[str]) -> str | None:
+    for id_ in expected_ids:
+        if re.search(rf"\b{re.escape(id_)}\b", text):
+            return id_
+    return None
+
+
+def _donor_name_matches(donor_name: str, expected_names: list[str]) -> bool:
+    dn = donor_name.lower()
+    return any(dn in e.lower() or e.lower() in dn for e in expected_names)
+
+
+
+def _score_metadata(meta: ReceiptMetadata) -> int:
+    """Count non-empty critical fields to compare extraction quality across engines."""
+    fields = ("amount", "receipt_date", "receipt_number", "registration_number", "tax_report_number")
+    return sum(1 for f in fields if getattr(meta, f))
+
+
+def _best_metadata(pdf_path: Path, raw_text: str, normalized_text: str) -> ReceiptMetadata:
+    meta_raw = extract_metadata(raw_text, pdf_path)
+    meta_norm = extract_metadata(normalized_text, pdf_path)
+
+    def _pick(*vals: str) -> str:
+        return next((v for v in vals if v), "")
+
+    # Field-level merge: raw preserves correct Hebrew anchors (registration, donor);
+    # normalized handles fragmented RTL layouts better (receipt/tax/date/amount).
+    merged = ReceiptMetadata(
+        file_name=meta_raw.file_name,
+        registration_number=_pick(meta_raw.registration_number, meta_norm.registration_number),
+        donor_name=_pick(meta_raw.donor_name, meta_norm.donor_name),
+        donor_id=_pick(meta_raw.donor_id, meta_norm.donor_id),
+        receipt_number=_pick(meta_norm.receipt_number, meta_raw.receipt_number),
+        tax_report_number=_pick(meta_norm.tax_report_number, meta_raw.tax_report_number),
+        receipt_date=_pick(meta_norm.receipt_date, meta_raw.receipt_date),
+        amount=_pick(meta_norm.amount, meta_raw.amount),
+        organization_name=_pick(meta_norm.organization_name, meta_raw.organization_name),
+    )
+
+    # Recompute extraction_status against merged fields.
+    missing_critical: list[str] = []
+    if not merged.amount:
+        missing_critical.append("סכום")
+    if not merged.receipt_date:
+        missing_critical.append("תאריך")
+    if not merged.organization_name and not merged.registration_number:
+        missing_critical.append("שם עמותה")
+
+    missing_noncritical: list[str] = []
+    if not merged.organization_name and merged.registration_number:
+        missing_noncritical.append("שם עמותה")
+    if not merged.registration_number:
+        missing_noncritical.append("מספר עמותה")
+    if not merged.receipt_number:
+        missing_noncritical.append("מספר קבלה")
+    if not merged.tax_report_number:
+        missing_noncritical.append("מספר אישור דיווח")
+
+    if missing_critical:
+        merged.extraction_status = STATUS_NEEDS_REVIEW
+        merged.notes = f"חסר: {', '.join(missing_critical)}"
+    elif missing_noncritical:
+        merged.extraction_status = STATUS_PARTIAL
+        merged.notes = ""
+    else:
+        merged.extraction_status = STATUS_OK
+        merged.notes = ""
+
+    # Combine non-"חסר:" notes from both sources (e.g. "תאריך מתוך שם הקובץ"), deduplicated.
+    surviving: list[str] = []
+    seen: set[str] = set()
+    for note in (meta_raw.notes + "; " + meta_norm.notes).split("; "):
+        n = note.strip()
+        if n and not n.startswith("חסר:") and n not in seen:
+            seen.add(n)
+            surviving.append(n)
+    if surviving:
+        merged.notes = "; ".join(filter(None, [merged.notes] + surviving))
+
+    return merged
 
 # Internal field names — used for getattr(meta, col) and as dict keys.
 COLUMNS = [
@@ -59,6 +161,7 @@ _STATUS_HE: dict[str, str] = {
 
 _DONOR_MATCH_HE: dict[str, str] = {
     "matched": "התאמה",
+    "matched_by_name": "התאמה",
     "not_detected": "לא זוהה",
     "mismatch": "אי התאמה",
 }
@@ -114,7 +217,35 @@ def _build_row(
     try:
         raw_text = extract_text_from_pdf(pdf_path)
         normalized = normalize_hebrew_text(raw_text)
-        meta = extract_metadata(normalized, pdf_path)
+        meta = _best_metadata(pdf_path, raw_text, normalized)
+
+        raw_mupdf = extract_text_from_pdf_pymupdf(pdf_path)
+        if raw_mupdf:
+            norm_mupdf = normalize_hebrew_text(raw_mupdf)
+            meta_mupdf = _best_metadata(pdf_path, raw_mupdf, norm_mupdf)
+            if _score_metadata(meta_mupdf) > _score_metadata(meta):
+                meta, raw_text, normalized = meta_mupdf, raw_mupdf, norm_mupdf
+
+        if not meta.donor_id and config and config.expected_donor_ids:
+            found = _find_config_donor_id(raw_text, config.expected_donor_ids)
+            if not found:
+                found = _find_config_donor_id(normalized, config.expected_donor_ids)
+            if found:
+                meta.donor_id = found
+                if meta.donor_id == meta.registration_number:
+                    meta.registration_number = ""
+            elif (
+                len(config.expected_donor_ids) == 1
+                and config.expected_donor_names
+                and meta.donor_name
+                and _donor_name_matches(meta.donor_name, config.expected_donor_names)
+            ):
+                meta.donor_id = config.expected_donor_ids[0]
+                if meta.donor_id == meta.registration_number:
+                    meta.registration_number = ""
+                meta.notes = "; ".join(
+                    filter(None, [meta.notes, 'תעודת זהות הושלמה לפי שם תורם תואם'])
+                )
     except Exception:
         meta = ReceiptMetadata(
             file_name=pdf_path.name,
@@ -150,7 +281,7 @@ def compute_donor_match(
             dn = donor_name.lower()
             for expected in config.expected_donor_names:
                 if dn in expected.lower() or expected.lower() in dn:
-                    return "matched"
+                    return "matched_by_name"
             return "mismatch"
     return "not_detected"
 
@@ -163,6 +294,8 @@ def _donor_match_note(
 ) -> str:
     if match == "matched":
         return ""
+    if match == "matched_by_name":
+        return 'תורם תואם לפי שם; ת"ז לא זוהתה בקבלה'
     if match == "mismatch":
         if config and config.expected_donor_ids and donor_id:
             return "תעודת זהות תורם לא תואמת"
@@ -218,6 +351,9 @@ def _cell_value(col: str, meta: ReceiptMetadata) -> object:
         return _DONOR_MATCH_HE.get(value, value)
     if col == "severity":
         return _SEVERITY_HE.get(value, value)
+    if col == "amount":
+        numeric = _parse_amount(value)
+        return numeric if numeric is not None else value
     return value
 
 
@@ -244,7 +380,9 @@ def _write_month_sheet(
         meta = _build_row(pdf_path, account, config, year)
         counts[meta.severity] = counts.get(meta.severity, 0) + 1
         for col_idx, col in enumerate(COLUMNS, start=1):
-            ws.cell(row=row_idx, column=col_idx, value=_cell_value(col, meta))
+            cell = ws.cell(row=row_idx, column=col_idx, value=_cell_value(col, meta))
+            if col == "amount":
+                cell.number_format = "#,##0.##"
 
     for col_idx in range(1, len(COLUMNS) + 1):
         ws.column_dimensions[get_column_letter(col_idx)].auto_size = True
