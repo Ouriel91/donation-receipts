@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import openpyxl
 import pytest
@@ -9,6 +10,10 @@ from src.receipt_metadata_extractor import ReceiptMetadata
 from src.receipt_summary import (
     COLUMN_HEADERS_HE,
     COLUMNS,
+    _build_row,
+    _donor_match_note,
+    _find_config_donor_id,
+    _parse_amount,
     compute_donor_match,
     compute_severity,
     generate_summary_workbook,
@@ -307,26 +312,26 @@ def test_donor_match_id_falls_through_to_name_when_no_id_extracted():
         compute_donor_match(
             "", "ישראל ישראלי", _cfg(ids=["123456789"], names=["ישראל ישראלי"])
         )
-        == "matched"
+        == "matched_by_name"
     )
 
 
 def test_donor_match_matched_by_name_exact():
-    assert compute_donor_match("", "ישראל ישראלי", _cfg(names=["ישראל ישראלי"])) == "matched"
+    assert compute_donor_match("", "ישראל ישראלי", _cfg(names=["ישראל ישראלי"])) == "matched_by_name"
 
 
 def test_donor_match_matched_by_name_substring_detected_in_expected():
     # detected name is substring of expected name
-    assert compute_donor_match("", "ישראל", _cfg(names=["ישראל ישראלי"])) == "matched"
+    assert compute_donor_match("", "ישראל", _cfg(names=["ישראל ישראלי"])) == "matched_by_name"
 
 
 def test_donor_match_matched_by_name_expected_in_detected():
     # expected name is substring of detected name
-    assert compute_donor_match("", "ישראל ישראלי הגדול", _cfg(names=["ישראל ישראלי"])) == "matched"
+    assert compute_donor_match("", "ישראל ישראלי הגדול", _cfg(names=["ישראל ישראלי"])) == "matched_by_name"
 
 
 def test_donor_match_matched_by_name_case_insensitive():
-    assert compute_donor_match("", "israel israely", _cfg(names=["Israel Israely"])) == "matched"
+    assert compute_donor_match("", "israel israely", _cfg(names=["Israel Israely"])) == "matched_by_name"
 
 
 def test_donor_match_mismatch_by_name():
@@ -578,3 +583,253 @@ def test_notes_contain_not_required_for_tax_year_when_2025(tmp_path):
     notes_col = COLUMNS.index("notes") + 1
     notes = [ws.cell(row=r, column=notes_col).value or "" for r in range(2, ws.max_row + 1)]
     assert all("שדה לא נדרש לשנת מס זו" in v for v in notes)
+
+
+# --- dual extraction: _best_metadata selection logic ---
+
+from src.hebrew_text_normalizer import normalize_hebrew_text  # noqa: E402
+from src.receipt_metadata_extractor import extract_metadata  # noqa: E402
+from src.receipt_summary import _best_metadata  # noqa: E402
+
+_TRANZILA_PATH = Path("receipts/primary/2026/06_June/24_06_26__tranzila_test.pdf")
+_TRANZILA_RAW = (
+    "לכבוד\n"
+    "אוריאל אוחיון\n"
+    'ת"ז 111111118\n'
+    'מלכ"ר : 580537942\n'
+    "קבלה תרומה 302678\n"
+    "אישור דיווח: 88287\n"
+    "24/06/2026\n"
+    "₪100"
+)
+# Normalizing logical-order Hebrew reverses anchors → breaks receipt/tax/donor_name patterns
+_TRANZILA_NORM = normalize_hebrew_text(_TRANZILA_RAW)
+
+
+def test_best_metadata_selects_raw_when_raw_wins():
+    meta = _best_metadata(_TRANZILA_PATH, _TRANZILA_RAW, _TRANZILA_NORM)
+    # These three fields are only recoverable from raw (anchors broken in normalized)
+    assert meta.receipt_number == "302678"
+    assert meta.tax_report_number == "88287"
+    assert meta.donor_name == "אוריאל אוחיון"
+
+
+def test_best_metadata_selects_normalized_when_normalized_wins():
+    # Sparse raw (2 fields); richer synthetic normalized (4 fields) → normalized chosen
+    sparse_raw = "24/06/2026\n₪100"
+    richer_norm = (
+        "עמותה\n580537942\n"
+        "קבלה תרומה 302678\n"
+        "24/06/2026\n₪100"
+    )
+    meta = _best_metadata(_TRANZILA_PATH, sparse_raw, richer_norm)
+    assert meta.registration_number == "580537942"
+    assert meta.receipt_number == "302678"
+
+
+def test_best_metadata_tie_prefers_normalized():
+    # Same fields (date + amount) but different amounts → normalized wins for amount field
+    raw_text = "24/06/2026\n₪100"
+    norm_text = "24/06/2026\n₪200"
+    path = Path("receipts/primary/2026/06_June/24_06_26__tie_test.pdf")
+    meta = _best_metadata(path, raw_text, norm_text)
+    assert meta.amount == "200"
+
+
+# --- field-level merge ---
+
+
+def test_best_metadata_merge_raw_registration_with_norm_structural_fields():
+    # raw: only registration anchor; norm: only receipt/date/amount.
+    # Old whole-object selection would lose registration_number when norm has more fields.
+    # New merge must include all fields from both sources.
+    raw = "עמותה רשומה: 580712348"
+    norm = "קבלה תרומה 80806\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/receipt.pdf")
+    meta = _best_metadata(path, raw, norm)
+    assert meta.registration_number == "580712348"
+    assert meta.receipt_number == "80806"
+    assert meta.receipt_date == "05/06/2026"
+    assert meta.amount == "200.00"
+
+
+def test_best_metadata_merge_raw_donor_fields_preserved():
+    # Normalized text reverses Hebrew anchors → breaks donor_name/donor_id extraction.
+    # Field-level merge must recover them from raw.
+    raw = 'שם התורם: ישראל ישראלי\nת"ז: 123456789\n05/06/2026\n₪100'
+    norm = normalize_hebrew_text(raw)
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = _best_metadata(path, raw, norm)
+    assert meta.donor_name == "ישראל ישראלי"
+    assert meta.donor_id == "123456789"
+
+
+def test_best_metadata_notes_no_duplicates():
+    # When both sources produce the same note (e.g. filename-date note), it must
+    # appear only once in the merged metadata.
+    text = "עמותה\n580395051\n₪200"  # no in-text date → both sources add filename-date note
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt.pdf")
+    meta = _best_metadata(path, text, text)
+    assert "תאריך מתוך שם הקובץ" in meta.notes
+    assert meta.notes.count("תאריך מתוך שם הקובץ") == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_amount — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_amount_bare_integer():
+    assert _parse_amount("200") == 200.0
+
+
+def test_parse_amount_decimal():
+    assert _parse_amount("200.00") == 200.0
+
+
+def test_parse_amount_shekel_prefix():
+    assert _parse_amount("₪200") == 200.0
+
+
+def test_parse_amount_shekel_with_space():
+    assert _parse_amount("₪ 200.00") == 200.0
+
+
+def test_parse_amount_thousands_separator():
+    assert _parse_amount("1,200") == 1200.0
+
+
+def test_parse_amount_thousands_with_decimal():
+    assert _parse_amount("1,200.50") == 1200.5
+
+
+def test_parse_amount_empty_returns_none():
+    assert _parse_amount("") is None
+
+
+def test_parse_amount_invalid_returns_none():
+    assert _parse_amount("N/A") is None
+
+
+# ---------------------------------------------------------------------------
+# donor match — matched_by_name
+# ---------------------------------------------------------------------------
+
+
+def test_compute_donor_match_id_matched_is_still_matched():
+    assert compute_donor_match("123456789", "", _cfg(ids=["123456789"])) == "matched"
+
+
+def test_donor_match_note_matched_by_name_returns_note():
+    note = _donor_match_note("", "ישראל ישראלי", None, "matched_by_name")
+    assert note == 'תורם תואם לפי שם; ת"ז לא זוהתה בקבלה'
+
+
+def test_donor_match_note_matched_by_id_returns_empty():
+    assert _donor_match_note("123456789", "", None, "matched") == ""
+
+
+def test_compute_severity_matched_by_name_is_ready():
+    config = _cfg(names=["ישראל ישראלי"])
+    m = _meta(donor_match="matched_by_name")
+    assert compute_severity(m, 2026, config) == "ready"
+
+
+# ---------------------------------------------------------------------------
+# _find_config_donor_id — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_find_config_donor_id_matches_without_anchor():
+    text = "לכבוד\nישראל ישראלי\n111111118\nקבלה 100001\n₪200"
+    assert _find_config_donor_id(text, ["111111118"]) == "111111118"
+
+
+def test_find_config_donor_id_id_not_in_config_returns_none():
+    # ID present in text but not listed in config — must not match
+    text = "111111118"
+    assert _find_config_donor_id(text, ["999999999"]) is None
+
+
+def test_find_config_donor_id_empty_config_returns_none():
+    assert _find_config_donor_id("111111118", []) is None
+
+
+def test_find_config_donor_id_no_partial_match():
+    # "11111111" (8 digits) is a prefix of "111111118" — word boundary must prevent match
+    assert _find_config_donor_id("111111118", ["11111111"]) is None
+
+
+def test_find_config_donor_id_returns_first_matching():
+    text = "111111118 and 222222226"
+    assert _find_config_donor_id(text, ["222222226", "111111118"]) == "222222226"
+
+
+def test_donor_match_matched_by_name_displays_as_התאמה_in_workbook(tmp_path):
+    # Verify matched_by_name is mapped to the same Hebrew display value as matched
+    receipts_dir = _setup_receipts(tmp_path, "testaccount", 2026)
+    reports_dir = tmp_path / "reports"
+    # The fixture PDFs have no donor data, so donor_match will be not_detected.
+    # We just verify the mapping dict value directly via the already-imported constant.
+    from src.receipt_summary import _DONOR_MATCH_HE  # noqa: PLC0415
+    assert _DONOR_MATCH_HE["matched_by_name"] == "התאמה"
+    assert _DONOR_MATCH_HE["matched"] == "התאמה"
+
+
+# ---------------------------------------------------------------------------
+# donor_id completion from config — name-based fallback
+# ---------------------------------------------------------------------------
+
+
+_DONOR_ID_COMPLETION_TEXT = (
+    "לכבוד\n"
+    "Israel Israely\n"
+    "580537942\n"
+    "05/06/2026\n"
+    "₪100"
+)
+
+
+def test_donor_id_completed_from_config_when_single_id_and_name_matches(tmp_path):
+    """When exactly one expected_donor_id is configured and the donor name from the
+    receipt matches expected_donor_names, _build_row must populate donor_id from config
+    and add the completion note."""
+    pdf_path = tmp_path / "05_06_26__receipt_9001.pdf"
+    pdf_path.write_bytes(b"fake")
+
+    config = AccountConfig(
+        display_name="Test",
+        expected_donor_ids=["111111118"],
+        expected_donor_names=["Israel Israely"],
+    )
+
+    with (
+        patch("src.receipt_summary.extract_text_from_pdf", return_value=_DONOR_ID_COMPLETION_TEXT),
+        patch("src.receipt_summary.normalize_hebrew_text", return_value=_DONOR_ID_COMPLETION_TEXT),
+    ):
+        meta = _build_row(pdf_path, "testaccount", config, 2026)
+
+    assert meta.donor_id == "111111118"
+    assert 'תעודת זהות הושלמה לפי שם תורם תואם' in meta.notes
+
+
+def test_donor_id_not_guessed_when_multiple_expected_ids_and_name_only_matches(tmp_path):
+    """When config has multiple expected_donor_ids and the donor ID is not found in text,
+    _build_row must NOT guess — donor_id must remain empty even if the name matches."""
+    pdf_path = tmp_path / "05_06_26__receipt_9002.pdf"
+    pdf_path.write_bytes(b"fake")
+
+    config = AccountConfig(
+        display_name="Test",
+        expected_donor_ids=["111111118", "222222226"],
+        expected_donor_names=["Israel Israely"],
+    )
+
+    with (
+        patch("src.receipt_summary.extract_text_from_pdf", return_value=_DONOR_ID_COMPLETION_TEXT),
+        patch("src.receipt_summary.normalize_hebrew_text", return_value=_DONOR_ID_COMPLETION_TEXT),
+    ):
+        meta = _build_row(pdf_path, "testaccount", config, 2026)
+
+    assert meta.donor_id == ""
+    assert meta.donor_match == "matched_by_name"

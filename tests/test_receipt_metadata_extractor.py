@@ -1,9 +1,12 @@
 from pathlib import Path
 
+from src.hebrew_text_normalizer import normalize_hebrew_text
 from src.receipt_metadata_extractor import (
     STATUS_NEEDS_REVIEW,
     STATUS_OK,
     STATUS_PARTIAL,
+    _find_registration_number_by_explicit_anchor,
+    _is_valid_corporate_registration_number,
     extract_metadata,
 )
 
@@ -198,11 +201,11 @@ def test_empty_text_all_blank_needs_review():
 
 
 def test_registration_number_nine_digits():
-    text = "עמותה\n123456789\n05/06/2026\n₪100.00\nארגון"
+    text = "עמותה\n581234567\n05/06/2026\n₪100.00\nארגון"
     path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
     meta = extract_metadata(text, path)
 
-    assert meta.registration_number == "123456789"
+    assert meta.registration_number == "581234567"
 
 
 # --- amount: whole numbers (no decimal places) ---
@@ -264,11 +267,11 @@ def test_tax_report_num_ishur_divuach_same_line():
 
 def test_registration_number_four_lines_after_anchor():
     # 9-digit number sits 4 lines below the anchor — beyond old ±2 window
-    text = "קרן קובי מנדל\nעמותה\nפרטים\nנוספים\nלכבוד\n123456789\n05/06/2026\n₪200.00"
+    text = "קרן קובי מנדל\nעמותה\nפרטים\nנוספים\nלכבוד\n581234567\n05/06/2026\n₪200.00"
     path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
     meta = extract_metadata(text, path)
 
-    assert meta.registration_number == "123456789"
+    assert meta.registration_number == "581234567"
 
 
 # --- receipt_number: text-based fallback ---
@@ -470,3 +473,414 @@ def test_org_name_beyond_line_10():
     meta = extract_metadata(text, path)
 
     assert meta.organization_name == "קרן קובי מנדל"
+
+
+# --- donor_id / donor_name / registration_number fixes ---
+
+def test_donor_id_taz_no_trailing_dot():
+    text = "ת.ז 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_mas_zehut_apostrophe():
+    text = "מס' זהות: 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_mas_zehut_no_apostrophe():
+    text = "מס זהות 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_zehut_bare():
+    text = "זהות: 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_donor_id_mz_no_trailing_dot():
+    text = "מ.ז 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_id == "123456789"
+
+
+def test_registration_number_malkhur_not_anchor():
+    # Both מלכ"ר and עמותה are anchors; NGO context (מלכ"ר) causes the 58-prefix number to win.
+    text = 'מלכ"ר\nעמותה\n580123456\nת"ז: 987654321\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580123456"
+    assert meta.donor_id == "987654321"
+
+
+def test_collision_prefers_donor_id():
+    # When the only 9-digit number in the text is the donor ID (anchored by ת"ז),
+    # the fallback should not set it as registration_number.
+    text = 'ת"ז: 123456789\nקרן דוגמה\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.donor_id == "123456789"
+    assert meta.registration_number == ""
+
+
+def test_donor_name_email_rejected():
+    text = "שם התורם: donor@example.com\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == ""
+
+
+def test_donor_name_pure_digits_rejected():
+    text = "לכבוד: 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == ""
+
+
+def test_donor_name_id_trimmed():
+    text = "שם התורם: ישראל ישראלי 123456789\nקרן דוגמה\n05/06/2026\n₪200.00"
+    meta = extract_metadata(text, FAKE_PATH)
+    assert meta.donor_name == "ישראל ישראלי"
+
+
+# --- registration_number: prefix-based validation ---
+
+def test_registration_number_prefix_30_rejected():
+    # Donor ID starting with 30 must not become registration_number, even near an org anchor
+    text = "עמותה\n300123456\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == ""
+
+
+def test_registration_number_prefix_58_accepted():
+    # NGO (amuta) registration numbers start with 58
+    text = "עמותה\n580123456\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580123456"
+
+
+def test_registration_number_prefix_51_accepted():
+    # Company registration numbers start with 51
+    text = 'ח"פ\n512345678\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "512345678"
+
+
+def test_registration_number_prefix_55_accepted():
+    # Cooperative registration numbers start with 55
+    text = "ח.פ\n552345678\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "552345678"
+
+
+# --- dual-text search: raw + normalized ---
+
+def test_dual_text_already_correct_pdf():
+    # Simulates a PDF (e.g. Tranzila/Ahavat HaGilad) where Hebrew is already in
+    # logical order. normalize_hebrew_text reverses it and breaks Hebrew anchors.
+    # Passing raw_text as fallback must recover all fields.
+    raw = (
+        "לכבוד\n"
+        "אוריאל אוחיון\n"
+        'ת"ז 123456789\n'
+        'מלכ"ר : 580537942\n'
+        "קבלה תרומה 302678\n"
+        "אישור דיווח: 88287\n"
+        "24/06/2026\n"
+        "₪100"
+    )
+    normalized = normalize_hebrew_text(raw)
+    path = Path("receipts/primary/2026/06_June/24_06_26__receipt_302678.pdf")
+    meta = extract_metadata(normalized, path, raw_text=raw)
+
+    assert meta.donor_name == "אוריאל אוחיון"
+    assert meta.donor_id == "123456789"
+    assert meta.registration_number == "580537942"
+    assert meta.receipt_number == "302678"
+    assert meta.tax_report_number == "88287"
+    assert meta.receipt_date == "24/06/2026"
+    assert meta.amount == "100"
+
+
+def test_tranzila_logical_order_raw_extracts_all_fields():
+    # Simulates pypdf output from a Tranzila/Ahavat HaGilad receipt where
+    # Hebrew is already in logical order. normalize_hebrew_text would reverse
+    # the anchors and break most patterns — but raw alone must succeed.
+    raw = (
+        "לכבוד\n"
+        "אוריאל אוחיון\n"
+        'ת"ז 111111118\n'
+        'מלכ"ר : 580537942\n'
+        "קבלה תרומה 302678\n"
+        "אישור דיווח: 88287\n"
+        "24/06/2026\n"
+        "₪100"
+    )
+    path = Path("receipts/primary/2026/06_June/24_06_26__test_302678.pdf")
+    meta = extract_metadata(raw, path)
+
+    assert meta.registration_number == "580537942"
+    assert meta.receipt_number == "302678"
+    assert meta.tax_report_number == "88287"
+    assert meta.receipt_date == "24/06/2026"
+    assert meta.amount == "100"
+    assert meta.donor_name == "אוריאל אוחיון"
+    assert meta.donor_id == "111111118"
+
+
+# --- _is_valid_corporate_registration_number ---
+
+
+def test_is_valid_corporate_reg_num_58():
+    assert _is_valid_corporate_registration_number("580537942") is True
+
+
+def test_is_valid_corporate_reg_num_51():
+    assert _is_valid_corporate_registration_number("512345678") is True
+
+
+def test_is_valid_corporate_reg_num_52():
+    assert _is_valid_corporate_registration_number("522345678") is True
+
+
+def test_is_valid_corporate_reg_num_55():
+    assert _is_valid_corporate_registration_number("552345678") is True
+
+
+def test_is_valid_corporate_reg_num_rejects_30_prefix():
+    assert _is_valid_corporate_registration_number("305678901") is False
+
+
+def test_donor_id_same_as_registration_clears_registration():
+    # 580123450 has valid org prefix (58) so it matches as registration_number
+    # near an עמותה anchor; ת"ז anchor also makes it donor_id → collision clears
+    # registration_number, keeping donor_id.
+    text = (
+        'ת"ז 580123450\n'
+        "עמותה\n"
+        "580123450\n"
+        "05/06/2026\n₪200.00"
+    )
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.donor_id == "580123450"
+    assert meta.registration_number == ""
+
+
+# --- registration_number: מלכ"ר / מלכ״ר anchor patterns ---
+
+
+def test_registration_number_amuta_reshumat_colon():
+    # "עמותה רשומה: 580123456" — "עמותה" is in _ASSOC_ANCHOR so this already works
+    text = "עמותה רשומה: 580123456\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580123456"
+
+
+def test_registration_number_malkhur_ascii_quote_colon():
+    # "מלכ"ר: 580123456" — מלכ"ר (ASCII double-quote) is now in _ASSOC_ANCHOR
+    text = 'מלכ"ר: 580123456\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580123456"
+
+
+def test_registration_number_malkhur_gershayim():
+    # "מלכ״ר 580123456" — מלכ״ר (Unicode gershayim ״) is now in _ASSOC_ANCHOR
+    text = "מלכ״ר 580123456\n05/06/2026\n₪200.00"
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580123456"
+
+
+def test_registration_number_malkhur_rejects_30_prefix():
+    # "מלכ"ר: 305123456" — 30 prefix is not a valid corporate prefix → rejected
+    text = 'מלכ"ר: 305123456\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == ""
+
+
+# --- registration_number: inline visual layout and adjacent (number before anchor) ---
+
+
+def test_registration_number_malkhur_space_colon_number():
+    # Visual PDF layout: "מלכ"ר : 580537942" (anchor then colon then number, same line)
+    text = 'מלכ"ר : 580537942\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580537942"
+
+
+def test_registration_number_number_adjacent_malkhur():
+    # PDF extraction concatenates digits directly with anchor: "580537942מלכ"ר"
+    # \b boundary fails between digit and Hebrew — inline _REG_ANCHOR_AFTER handles it.
+    text = '580537942מלכ"ר\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580537942"
+
+
+def test_registration_number_number_space_malkhur():
+    # Number before anchor with a space: "580537942 מלכ"ר"
+    text = '580537942 מלכ"ר\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == "580537942"
+
+
+def test_registration_number_malkhur_colon_30_prefix_rejected():
+    # "מלכ"ר : 305123456" — 30 prefix is not a valid corporate registration prefix
+    text = 'מלכ"ר : 305123456\n05/06/2026\n₪200.00'
+    path = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+    meta = extract_metadata(text, path)
+    assert meta.registration_number == ""
+
+
+# --- _find_registration_number_by_explicit_anchor: real-miss regression tests ---
+
+
+def test_explicit_anchor_malkhur_ascii_space_colon():
+    # Real receipt format: "מלכ"ר : 580537943"
+    assert _find_registration_number_by_explicit_anchor('מלכ"ר : 580537943') == "580537943"
+
+
+def test_explicit_anchor_malkhur_gershayim_space_colon():
+    # Real receipt format with Unicode gershayim: "מלכ״ר : 580537943"
+    assert _find_registration_number_by_explicit_anchor('מלכ״ר : 580537943') == "580537943"
+
+
+def test_explicit_anchor_malkhur_no_quotes():
+    # Variant without any quotation marks: "מלכר : 580537943"
+    assert _find_registration_number_by_explicit_anchor('מלכר : 580537943') == "580537943"
+
+
+def test_explicit_anchor_number_before_malkhur_ascii():
+    # Number concatenated before anchor: "580537943מלכ"ר"
+    assert _find_registration_number_by_explicit_anchor('580537943מלכ"ר') == "580537943"
+
+
+def test_explicit_anchor_number_before_malkhur_gershayim():
+    # Number concatenated before gershayim variant: "580537943מלכ״ר"
+    assert _find_registration_number_by_explicit_anchor('580537943מלכ״ר') == "580537943"
+
+
+def test_explicit_anchor_amuta_reshumat_colon():
+    # Real receipt format: "עמותה רשומה: 580712348"
+    assert _find_registration_number_by_explicit_anchor('עמותה רשומה: 580712348') == "580712348"
+
+
+def test_explicit_anchor_number_before_amuta_reshumat():
+    # Number directly before anchor (no space): "580712348עמותה רשומה"
+    assert _find_registration_number_by_explicit_anchor('580712348עמותה רשומה') == "580712348"
+
+
+def test_explicit_anchor_malkhur_rejects_non_ngo_prefix():
+    # מלכ"ר is an NGO anchor — must reject non-58 prefix (30 is invalid entirely)
+    assert _find_registration_number_by_explicit_anchor('מלכ"ר : 305123456') is None
+
+
+def test_explicit_anchor_amuta_reshumat_rejects_non_ngo_prefix():
+    # עמותה רשומה is an NGO anchor — must reject non-58 prefix
+    assert _find_registration_number_by_explicit_anchor('עמותה רשומה: 305123456') is None
+
+
+# --- registration extraction: real-receipt layout variants (bug diagnosis) ---
+# These four shapes come from the problematic receipt. Exactly one is novel:
+# variant 3 ("number : anchor") is not matched by _EXPLICIT_REG_AFTER (which
+# only allows horizontal whitespace between number and anchor, not a colon) and
+# must fall through to the window-based search.
+
+_BUG_PATH = Path("receipts/primary/2026/06_June/05_06_26__receipt_1.pdf")
+_BUG_SUFFIX = "\n05/06/2026\n₪100.00"
+
+
+def test_registration_bug_variant_anchor_colon_number():
+    # "מלכ"ר : 580537942" — anchor then colon then number (standard visual layout)
+    meta = extract_metadata('מלכ"ר : 580537942' + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580537942"
+
+
+def test_registration_bug_variant_number_adjacent_anchor():
+    # "580537942מלכ"ר" — number directly concatenated before anchor (PDF concat artefact)
+    meta = extract_metadata('580537942מלכ"ר' + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580537942"
+
+
+def test_registration_bug_variant_number_colon_anchor():
+    # "580537942 : מלכ"ר" — number then colon then anchor (reversed label layout).
+    # _EXPLICIT_REG_AFTER only allows whitespace between digits and anchor, not ":".
+    # Must fall through to the window-based search in _find_registration_number.
+    meta = extract_metadata('580537942 : מלכ"ר' + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580537942"
+
+
+def test_registration_bug_variant_amuta_reshumat():
+    # "עמותה רשומה: 580712348" — anchor then number, direct (non-normalized) form
+    meta = extract_metadata("עמותה רשומה: 580712348" + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580712348"
+
+
+def test_registration_bug_variant_amuta_reshumat_normalized():
+    # normalize_hebrew_text reverses each Hebrew word in place:
+    # "עמותה רשומה: 580712348" → "התומע המושר: 580712348"
+    # The reversed-anchor forms in _EXPLICIT_REG_BEFORE must match this.
+    meta = extract_metadata("התומע המושר: 580712348" + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580712348"
+
+
+# --- עמותה רשומה layout variants (anchor + number, all four orientations) ---
+
+
+def test_registration_amuta_reshumat_no_colon():
+    # "עמותה רשומה 580712348" — anchor before number, space only (no colon)
+    meta = extract_metadata("עמותה רשומה 580712348" + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580712348"
+
+
+def test_registration_amuta_reshumat_number_adjacent_before():
+    # "580712348עמותה רשומה" — number immediately before anchor, no space
+    meta = extract_metadata("580712348עמותה רשומה" + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580712348"
+
+
+def test_registration_amuta_reshumat_number_space_before():
+    # "580712348 עמותה רשומה" — number before anchor with a space
+    meta = extract_metadata("580712348 עמותה רשומה" + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == "580712348"
+
+
+def test_registration_amuta_reshumat_rejects_non_58_prefix():
+    # "עמותה רשומה" is an NGO anchor — must reject a non-58 prefix
+    meta = extract_metadata("עמותה רשומה: 512345678" + _BUG_SUFFIX, _BUG_PATH)
+    assert meta.registration_number == ""
+
+
+# --- _find_registration_number_by_explicit_anchor: עמותה רשומה across a line break ---
+
+
+def test_explicit_anchor_amuta_reshumat_space_before_colon():
+    # "עמותה רשומה : 580712348" — space before the colon as well as after
+    assert _find_registration_number_by_explicit_anchor('עמותה רשומה : 580712348') == "580712348"
+
+
+def test_explicit_anchor_amuta_reshumat_colon_newline_number():
+    # "עמותה רשומה:\n580712348" — number on the line following the colon
+    assert _find_registration_number_by_explicit_anchor('עמותה רשומה:\n580712348') == "580712348"
+
+
+def test_explicit_anchor_amuta_reshumat_preceded_by_other_line():
+    # Anchor line preceded by an unrelated line — must still find the number
+    text = 'חרות ישראל בארצנו\nעמותה רשומה: 580712348'
+    assert _find_registration_number_by_explicit_anchor(text) == "580712348"
+
+
+def test_explicit_anchor_amuta_reshumat_colon_newline_rejects_non_58_prefix():
+    # Same line-break shape, but a non-58 prefix must still be rejected
+    assert _find_registration_number_by_explicit_anchor('עמותה רשומה:\n305123456') is None

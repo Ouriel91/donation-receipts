@@ -16,7 +16,54 @@ _AMOUNT_TOTAL = re.compile(
 _AMOUNT_SHEKEL_WORD = re.compile(r"(?:שקל|לקש)\s*([\d,]+(?:\.\d{1,2})?)", re.UNICODE)
 
 _NINE_DIGITS = re.compile(r"\b(\d{9})\b")
-_ASSOC_ANCHOR = re.compile(r'(?:עמותה|מוסד|מלכ"ר)', re.UNICODE)
+
+# Explicit anchor patterns capturing (anchor, number) or (number, anchor).
+# [^\S\n]* matches horizontal whitespace only — no newline crossing — so multi-line
+# layouts fall through to the window-based search below.
+# Longer alternatives are listed first to prevent a prefix from matching early.
+_EXPLICIT_REG_BEFORE = re.compile(
+    r'(מלכ"ר|מלכ״ר|מלכר'
+    r'|עמותה[^\S\n]+רשומה|עמותה'
+    r'|התומע[^\S\n]+המושר|התומע'   # reversed forms produced by normalize_hebrew_text
+    r'|מספר[^\S\n]+עמותה|מספר[^\S\n]+תאגיד'
+    r'|ע"ר|ח\.פ|ח"פ)'
+    r'[^\S\n]*:?[^\S\n]*(\d{9})',
+    re.UNICODE,
+)
+_EXPLICIT_REG_AFTER = re.compile(
+    r'(\d{9})[^\S\n]*'
+    r'(מלכ"ר|מלכ״ר|מלכר'
+    r'|עמותה[^\S\n]+רשומה|עמותה'
+    r'|התומע[^\S\n]+המושר|התומע'   # reversed forms produced by normalize_hebrew_text
+    r'|מספר[^\S\n]+עמותה|מספר[^\S\n]+תאגיד'
+    r'|ע"ר|ח\.פ|ח"פ)',
+    re.UNICODE,
+)
+# "עמותה רשומה" may be separated from its number by a line break after the
+# colon (e.g. "עמותה רשומה:\n580712348") — unlike the patterns above, \s here
+# is allowed to cross newlines. Invisible RTL/LTR marks are stripped before
+# matching since they can sit between the colon and the number.
+_INVISIBLE_MARKS = re.compile(r'[‎‏]')
+_AMUTA_RESHUMA = re.compile(r'עמותה\s+רשומה\s*:?\s*(\d{9})', re.MULTILINE | re.UNICODE)
+# Anchors that designate a nonprofit (amuta/NGO) — require registration prefix 58.
+# Includes reversed forms produced when normalize_hebrew_text processes already-logical-order text.
+_NGO_ANCHOR_KEYWORDS = frozenset((
+    'מלכ"ר', 'מלכ״ר', 'מלכר', 'עמותה', 'עמותה רשומה', 'ע"ר',
+    'התומע', 'התומע המושר',  # reversed: עמותה → התומע, עמותה רשומה → התומע המושר
+))
+
+_ASSOC_ANCHOR = re.compile(
+    r'(?:מספר\s+עמותה|מספר\s+תאגיד|עמותה|התומע|מוסד|ע"ר|ח\.פ|ח"פ|מלכ"ר|מלכ״ר|מלכר)',
+    re.UNICODE,
+)
+# Valid Israeli corporate/nonprofit registration prefixes (51=company, 52=partnership, 55=cooperative, 58=amuta/NGO)
+_VALID_ORG_PREFIXES = frozenset(("51", "52", "55", "58"))
+# NGO context: when these anchors appear, prefer registration numbers starting with 58
+_NGO_CONTEXT = re.compile(r'(?:עמותה|התומע|ע"ר|מלכ"ר|מלכ״ר|מלכר)', re.UNICODE)
+
+
+def _is_valid_corporate_registration_number(value: str) -> bool:
+    return len(value) == 9 and value.isdigit() and value[:2] in _VALID_ORG_PREFIXES
 
 # Tax report number: three patterns handle the fragmented RTL layouts seen in real receipts.
 # Pattern A: number appears before ": anchor" across lines  e.g. "5527\n: \nהמיסים"
@@ -60,7 +107,7 @@ _RECEIPT_NUM_ADJACENT = re.compile(r"רוקמ(\d{4,8})(?:הלבק|תלבק|רו�
 
 # Donor ID: explicit anchor required — bare 9-digit numbers are also registration numbers.
 _DONOR_ID = re.compile(
-    r'(?:ת"ז|ת\.ז\.|תז|מספר\s+זהות|מ\.ז\.)\s*:?\s*(\d{9})\b',
+    r'(?:ת"ז|ת\.ז\.?|תז|מספר\s+זהות|מס\'?\s*זהות|מ\.ז\.?|זהות)\s*:?\s*(\d{9})\b',
     re.UNICODE,
 )
 # Donor name: conservative anchors only; captures rest of line (best-effort).
@@ -129,16 +176,65 @@ def _find_amount(text: str) -> str | None:
     return None
 
 
+def _is_ngo_anchor(anchor: str) -> bool:
+    return re.sub(r'\s+', ' ', anchor).strip() in _NGO_ANCHOR_KEYWORDS
+
+
+def _find_registration_number_by_explicit_anchor(text: str) -> str | None:
+    """Return the first registration number adjacent to an explicit org anchor on the same line."""
+    for m in _EXPLICIT_REG_BEFORE.finditer(text):
+        anchor, number = m.group(1), m.group(2)
+        if not _is_valid_corporate_registration_number(number):
+            continue
+        if _is_ngo_anchor(anchor) and not number.startswith("58"):
+            continue
+        return number
+    for m in _EXPLICIT_REG_AFTER.finditer(text):
+        number, anchor = m.group(1), m.group(2)
+        if not _is_valid_corporate_registration_number(number):
+            continue
+        if _is_ngo_anchor(anchor) and not number.startswith("58"):
+            continue
+        return number
+    for m in _AMUTA_RESHUMA.finditer(_INVISIBLE_MARKS.sub('', text)):
+        number = m.group(1)
+        if _is_valid_corporate_registration_number(number) and number.startswith("58"):
+            return number
+    return None
+
+
 def _find_registration_number(text: str) -> str | None:
+    # Explicit anchor match first — highest confidence, enforces NGO prefix 58.
+    result = _find_registration_number_by_explicit_anchor(text)
+    if result:
+        return result
+
+    is_ngo_text = bool(_NGO_CONTEXT.search(text))
     lines = text.split("\n")
     for i, line in enumerate(lines):
         if _ASSOC_ANCHOR.search(line):
             window = "\n".join(lines[max(0, i - 5) : i + 6])
-            m = _NINE_DIGITS.search(window)
-            if m:
-                return m.group(1)
-    m = _NINE_DIGITS.search(text)
-    return m.group(1) if m else None
+            candidates = [
+                m.group(1) for m in _NINE_DIGITS.finditer(window)
+                if _is_valid_corporate_registration_number(m.group(1))
+            ]
+            if not candidates:
+                continue
+            if _NGO_CONTEXT.search(window):
+                ngo = [c for c in candidates if c.startswith("58")]
+                if ngo:
+                    return ngo[0]
+                continue  # NGO context but no 58-prefix candidate — skip window
+            return candidates[0]
+    # Fallback: first valid 9-digit number; in NGO context, require 58 prefix.
+    for m in _NINE_DIGITS.finditer(text):
+        cand = m.group(1)
+        if not _is_valid_corporate_registration_number(cand):
+            continue
+        if is_ngo_text and not cand.startswith("58"):
+            continue
+        return cand
+    return None
 
 
 def _find_receipt_number_from_filename(file_path: Path) -> str | None:
@@ -185,26 +281,41 @@ def _find_donor_name(text: str) -> str | None:
     if not m:
         return None
     name = m.group(1).strip()
+    if not name:
+        return None
+    if "@" in name:
+        return None
+    if re.fullmatch(r'[\d\s\-]+', name):
+        return None
+    name = re.sub(r'\s+\d{7,}.*$', '', name).strip()
     return name if name else None
 
 
-def extract_metadata(normalized_text: str, file_path: Path) -> ReceiptMetadata:
+def _first_match(finder, normalized: str, raw: str):
+    """Try finder on normalized text; if not found, try raw text."""
+    return finder(normalized) or (finder(raw) if raw else None)
+
+
+def extract_metadata(normalized_text: str, file_path: Path, raw_text: str = "") -> ReceiptMetadata:
     meta = ReceiptMetadata(file_name=file_path.name)
     notes: list[str] = []
 
     meta.organization_name = _find_organization_name(normalized_text) or ""
-    meta.registration_number = _find_registration_number(normalized_text) or ""
+    meta.registration_number = _first_match(_find_registration_number, normalized_text, raw_text) or ""
     meta.receipt_number = (
         _find_receipt_number_from_filename(file_path)
-        or _find_receipt_number_in_text(normalized_text)
+        or _first_match(_find_receipt_number_in_text, normalized_text, raw_text)
         or ""
     )
-    meta.tax_report_number = _find_tax_report_number(normalized_text) or ""
-    meta.amount = _find_amount(normalized_text) or ""
-    meta.donor_name = _find_donor_name(normalized_text) or ""
-    meta.donor_id = _find_donor_id(normalized_text) or ""
+    meta.tax_report_number = _first_match(_find_tax_report_number, normalized_text, raw_text) or ""
+    meta.amount = _first_match(_find_amount, normalized_text, raw_text) or ""
+    meta.donor_name = _first_match(_find_donor_name, normalized_text, raw_text) or ""
+    meta.donor_id = _first_match(_find_donor_id, normalized_text, raw_text) or ""
 
-    date = _find_date_in_text(normalized_text)
+    if meta.donor_id and meta.registration_number and meta.donor_id == meta.registration_number:
+        meta.registration_number = ""
+
+    date = _first_match(_find_date_in_text, normalized_text, raw_text)
     if date:
         meta.receipt_date = date
     else:
