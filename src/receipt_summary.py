@@ -219,7 +219,10 @@ def _build_row(
         normalized = normalize_hebrew_text(raw_text)
         meta = _best_metadata(pdf_path, raw_text, normalized)
 
-        raw_mupdf = extract_text_from_pdf_pymupdf(pdf_path)
+        try:
+            raw_mupdf = extract_text_from_pdf_pymupdf(pdf_path)
+        except Exception:
+            raw_mupdf = ""
         if raw_mupdf:
             norm_mupdf = normalize_hebrew_text(raw_mupdf)
             meta_mupdf = _best_metadata(pdf_path, raw_mupdf, norm_mupdf)
