@@ -1,7 +1,45 @@
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
-from src.providers.gmail_provider import GmailProvider, _QUERY, _extract_attachments, _map_message
+import pytest
+from googleapiclient.errors import HttpError
+from httplib2 import Response
+
+from src.providers.gmail_provider import GmailProvider, _QUERY, _execute_with_rate_limit_retry, _extract_attachments, _map_message
+
+
+def _api_error(status: int, reason: str) -> HttpError:
+    body = ('{"error":{"errors":[{"reason":"' + reason + '"}]}}').encode()
+    return HttpError(Response({"status": status}), body)
+
+
+def test_rate_limit_retries_same_request():
+    request = MagicMock()
+    request.execute.side_effect = [_api_error(403, "rateLimitExceeded"), {"messages": []}]
+    with patch("src.providers.gmail_provider.time.sleep") as sleep:
+        assert _execute_with_rate_limit_retry(request) == {"messages": []}
+    assert request.execute.call_count == 2
+    sleep.assert_called_once_with(5)
+
+
+def test_non_rate_limit_error_is_not_retried():
+    request = MagicMock()
+    request.execute.side_effect = _api_error(403, "insufficientPermissions")
+    with patch("src.providers.gmail_provider.time.sleep") as sleep:
+        with pytest.raises(HttpError):
+            _execute_with_rate_limit_retry(request)
+    request.execute.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_rate_limit_retry_is_bounded():
+    request = MagicMock()
+    request.execute.side_effect = _api_error(429, "userRateLimitExceeded")
+    with patch("src.providers.gmail_provider.time.sleep") as sleep:
+        with pytest.raises(HttpError):
+            _execute_with_rate_limit_retry(request)
+    assert request.execute.call_count == 6
+    assert sleep.call_args_list == [call(5), call(15), call(30), call(60), call(120)]
 
 
 def _make_service(messages=None, detail=None):

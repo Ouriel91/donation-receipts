@@ -1,7 +1,23 @@
 import io
 from pathlib import Path
 
-from src.main import _compute_gmail_stats, _print_summary_stats
+from src.main import _compute_gmail_stats, _gmail_query, _print_summary_stats
+
+
+def test_gmail_year_builds_calendar_query():
+    assert _gmail_query(2026, None) == (
+        "after:2026/01/01 before:2027/01/01 has:attachment"
+    )
+
+
+def test_explicit_gmail_query_takes_precedence_over_year():
+    assert _gmail_query(2026, "after:2026/06/01 before:2026/07/01") == (
+        "after:2026/06/01 before:2026/07/01"
+    )
+
+
+def test_gmail_without_year_keeps_default_query():
+    assert _gmail_query(None, None) is None
 
 
 # --- _compute_gmail_stats ---

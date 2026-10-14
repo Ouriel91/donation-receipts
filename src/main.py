@@ -120,13 +120,20 @@ def _print_summary_stats(
     print()
 
 
+def _gmail_query(year: int | None, query: str | None) -> str | None:
+    if query is not None or year is None:
+        return query
+    return f"after:{year:04d}/01/01 before:{year + 1:04d}/01/01 has:attachment"
+
+
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--mode", required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--account", default=None)
-    parser.add_argument("--year", type=int, default=None)
+    parser.add_argument("--year", type=int, default=None,
+                        help="In gmail mode, search this calendar year unless --query is supplied")
     parser.add_argument("--query", default=None,
                         help="Gmail search query (default: newer_than:7d has:attachment)")
     parser.add_argument("--reprocess", action="store_true",
@@ -152,8 +159,9 @@ def main():
             sys.exit(1)
         if args.rebuild:
             _rebuild_year_dir(RECEIPTS_DIR, args.account, args.year, dry_run=args.dry_run)
+        query = _gmail_query(args.year, args.query)
         results = run_gmail(
-            provider=GmailProvider(ACCOUNTS_DIR / args.account, query=args.query),
+            provider=GmailProvider(ACCOUNTS_DIR / args.account, query=query),
             receipts_dir=RECEIPTS_DIR,
             manifest_path=MANIFEST_PATH,
             dry_run=args.dry_run,
@@ -162,7 +170,7 @@ def main():
         _print_gmail_summary(
             _compute_gmail_stats(results),
             dry_run=args.dry_run,
-            query=args.query,
+            query=query,
             account=args.account,
         )
     elif args.mode == "summary":
