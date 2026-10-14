@@ -74,7 +74,16 @@ python -m src.main --mode gmail --account primary --dry-run \
     --query "newer_than:90d has:attachment"
 ```
 
-If `--query` is omitted the default (`newer_than:7d has:attachment`) is used.
+If both `--query` and `--year` are omitted, the default (`newer_than:7d has:attachment`) is used.
+
+To search one calendar year without writing a query:
+
+```powershell
+python -m src.main --mode gmail --account primary --year 2026
+```
+
+`--year` builds `after:2026/01/01 before:2027/01/01 has:attachment`.
+An explicit `--query` takes precedence. Gmail interprets date boundaries in PST.
 
 ### Backfill / Reprocess
 

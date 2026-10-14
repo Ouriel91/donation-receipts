@@ -104,13 +104,7 @@ Possible examples:
 
 ## AI Collaboration Rules
 
-Claude should add or update tests together with meaningful business logic changes.
-
-Claude should avoid introducing untested critical behavior.
-
-Claude should explain if a behavior is difficult to test safely.
-
-Claude should prefer simple and readable tests over overly abstract test frameworks.
+Follow the role split in `docs/RULES.md`: Codex implements and updates meaningful tests; Claude independently reviews the changed behavior and reported checks. Avoid untested critical behavior. Explain when a behavior is difficult to test safely, and prefer simple readable tests over abstract test frameworks.
 
 ---
 
