@@ -30,8 +30,11 @@ adapter failure or invalid review JSON it also contains optional `error` with
 only the exception type (for example, `RuntimeError` or `JSONDecodeError`).
 Raw exception messages are excluded because they may contain sensitive text.
 
-The core uses adapter protocols so real CLI adapters can be added later. They
-are deliberately absent here. Before connecting them, provide an isolated
-workspace without product data, enforce filesystem and command permissions on
-Windows, verify those controls, and sanitize review inputs and logs. This MVP
-does not perform commit, push, or merge.
+The core uses adapter protocols and phase 1 CLI adapters have been prepared.
+They are not connected to this Mock command. Before connecting them, provide
+an isolated workspace without product data, enforce filesystem and command
+permissions on Windows, verify those controls, and sanitize review inputs and
+logs. This MVP does not perform commit, push, or merge.
+
+Phase 1 CLI adapter design and its closed live execution gate are documented in
+[`AGENT_LOOP_LIVE.md`](AGENT_LOOP_LIVE.md). This command still runs Mock only.
