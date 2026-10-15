@@ -34,19 +34,38 @@ stdout, or stderr enter loop reports. Exit code 1 with test failures returns
 Before **every** Claude review, the adapter collects a fresh `ReviewPackage`
 from the marked fictional workspace against a caller-supplied full base commit
 ID. It includes the current Git diff and UTF-8 contents of new files, including
-ignored files outside known runtime directories. Two consecutive snapshots
-must match; Git errors, unsafe paths or content, oversized inputs, or a changing
-workspace abort the review before Claude starts. Requirements, task,
+only nonignored untracked files selected by Git's standard ignore rules.
+An ignored source file requires an explicit entry in `LiveClaude.explicit_ignored_files`;
+each entry must be confirmed as ignored by Git and pass the same path, symlink,
+size, and content checks. A separate directory-level Git scan checks each
+reported ignored path or directory against a fixed runtime allowlist and the
+explicit file list.
+An unapproved ignored path, including a new `.gitignore` that hides itself,
+stops the review with `ReviewIntegrityError` without reporting its name or
+contents. Two consecutive snapshots must match; Git errors,
+unsafe paths or content, oversized inputs, or a changing workspace abort the
+review before Claude starts. Requirements, task,
 implementation summary, and test counts are provided with the snapshot. This
 filter is deliberately narrow and cannot prove that arbitrary text is free of
 personal information. Only a fictional workspace is acceptable.
 
-**N1, live-operation blocker:** The untracked-file scan asks Git for ignored
-files before filtering runtime directories. A large `.venv` can exceed the
-runner's 64 KiB stdout limit, so a review can fail before a snapshot is built.
-Phase 2 must bound and exclude runtime paths at collection time, then verify
-that all intended new source files still reach the review. Keep the live gate
-closed until this is resolved and tested in the isolated workspace.
+**N1 snapshot collection:** Git now excludes ignored directories such as
+`.venv` while listing untracked files. A local Git test covers an ignored tree
+whose names alone would exceed the runner's 64 KiB stdout cap. Excessive
+nonignored output still fails closed. The ignored-path integrity scan collapses
+ignored directories such as `.venv`, `tmp`, and `__pycache__` into directory
+entries rather than listing their files. This change does not open the live gate.
+
+**Remaining live-operation blockers:**
+
+- **S1:** The fixed runtime allowlist excludes its directories from review.
+  Source placed inside an approved runtime directory could be hidden. Before
+  live operation, enforce and verify that these directories cannot contain
+  task source or reviewable changes.
+- **S2:** Git index metadata such as `assume-unchanged` or `skip-worktree` can
+  hide modifications to tracked files from ordinary diff collection. Before
+  live operation, detect or forbid these flags and verify snapshot completeness
+  against the working tree.
 
 Claude invokes
 `claude -p` with `--restricted`, `--safe-mode`, `--tools Read,Glob,Grep`,

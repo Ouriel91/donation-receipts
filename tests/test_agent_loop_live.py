@@ -10,8 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from agent_loop import live as live_module
 from agent_loop.core import TestResult as LoopTestResult, run_loop
-from agent_loop.live import (LiveClaude, LiveCodex, LivePytest, OutputLimitError,
+from agent_loop.live import (MAX_OUTPUT, LiveClaude, LiveCodex, LivePytest, OutputLimitError,
                              ReviewPackage, collect_review_package)
 
 
@@ -20,7 +21,7 @@ BASE = "a" * 40
 
 def _fixed_package(monkeypatch, package):
     monkeypatch.setattr("agent_loop.live.collect_review_package",
-                        lambda root, requirements, base: package)
+                        lambda root, requirements, base, explicit: package)
 
 
 class _Input(io.BytesIO):
@@ -78,6 +79,27 @@ def fictional(tmp_path, monkeypatch):
     python.touch()
     monkeypatch.setattr("agent_loop.live.LIVE_ISOLATION_VERIFIED", True)
     return root, python
+
+
+def _real_git_workspace(tmp_path):
+    root = tmp_path / "fictional-git"
+    root.mkdir()
+    (root / ".fictional-agent-workspace").write_text("fiction only", encoding="utf-8")
+    (root / ".gitignore").write_text(
+        ".venv/\ntmp/\n__pycache__/\nsecrets/\nignored.py\n"
+        ".fictional-agent-workspace\n", encoding="utf-8"
+    )
+    (root / "code.py").write_text("version = 0\n", encoding="utf-8")
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q")
+    git("add", "--", ".gitignore", "code.py")
+    git("-c", "user.name=Fiction", "-c", "user.email=fiction@example.invalid",
+        "commit", "-q", "-m", "fictional base")
+    return root, git("rev-parse", "HEAD")
 
 
 def test_gate_blocks_all_subprocesses(tmp_path, monkeypatch):
@@ -307,6 +329,8 @@ def test_second_round_reviews_fresh_diff_and_untracked_content(fictional, monkey
         if args[0] == "rev-parse":
             return BASE + "\n"
         if args[0] == "ls-files":
+            if "--ignored" in args:
+                return ""
             return "new.py\0"
         if "--name-only" in args:
             return "code.py\0"
@@ -364,6 +388,8 @@ def test_snapshot_fails_closed_when_content_changes_during_collection(fictional,
         if args[0] == "rev-parse":
             return BASE
         if args[0] == "ls-files":
+            if "--ignored" in args:
+                return ""
             calls += 1
             if calls == 2:
                 (root / "new.py").write_text("version 2")
@@ -375,9 +401,9 @@ def test_snapshot_fails_closed_when_content_changes_during_collection(fictional,
         collect_review_package(root, "fictional requirement", BASE)
 
 
-def test_snapshot_includes_ignored_new_source_but_skips_runtime_files(fictional, monkeypatch):
+def test_snapshot_requests_only_nonignored_new_files(fictional, monkeypatch):
     root, _ = fictional
-    (root / "ignored.py").write_text("fictional = 1")
+    (root / "new.py").write_text("fictional = 1")
 
     def fake_git(where, *args):
         if args[:2] == ("rev-parse", "--show-toplevel"):
@@ -385,13 +411,138 @@ def test_snapshot_includes_ignored_new_source_but_skips_runtime_files(fictional,
         if args[0] == "rev-parse":
             return BASE
         if args[0] == "ls-files":
-            assert "--exclude-standard" not in args
-            return "ignored.py\0tmp/report.txt\0.fictional-agent-workspace\0"
+            assert "--exclude-standard" in args
+            if "--ignored" in args:
+                return ""
+            return "new.py\0.fictional-agent-workspace\0"
         return ""
 
     monkeypatch.setattr("agent_loop.live._git", fake_git)
     package = collect_review_package(root, "fictional requirement", BASE)
-    assert package.new_files == {"ignored.py": "fictional = 1"}
+    assert package.new_files == {"new.py": "fictional = 1"}
+
+
+def test_real_git_snapshot_excludes_large_venv_and_requires_explicit_ignored_file(tmp_path):
+    root, base = _real_git_workspace(tmp_path)
+    (root / "code.py").write_text("version = 1\n", encoding="utf-8")
+    (root / "new.py").write_text("new = True\n", encoding="utf-8")
+    (root / "tmp").mkdir()
+    (root / "tmp" / "report.txt").write_text("runtime", encoding="utf-8")
+    (root / "__pycache__").mkdir()
+    (root / "__pycache__" / "module.pyc").write_text("runtime", encoding="utf-8")
+    venv = root / ".venv" / "pkg"
+    venv.mkdir(parents=True)
+    venv_names = [f"package_{number:04d}_" + "x" * 60 + ".py" for number in range(900)]
+    assert sum(len(".venv/pkg/" + name) + 1 for name in venv_names) > MAX_OUTPUT
+    for name in venv_names:
+        (venv / name).write_text("x", encoding="utf-8")
+
+    package = collect_review_package(root, "fictional requirement", base)
+    assert "-version = 0" in package.changes
+    assert "+version = 1" in package.changes
+    assert package.new_files == {"new.py": "new = True\n"}
+    assert ".venv" not in package.changes
+
+    (root / "ignored.py").write_text("ignored = True\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unapproved ignored paths"):
+        collect_review_package(root, "fictional requirement", base)
+    included = collect_review_package(root, "fictional requirement", base,
+                                      explicit_ignored_files=("ignored.py",))
+    assert included.new_files == {"new.py": "new = True\n",
+                                  "ignored.py": "ignored = True\n"}
+    (root / "ignored.py").write_text("contact person@example.org", encoding="utf-8")
+    with pytest.raises(ValueError, match="content is not allowed"):
+        collect_review_package(root, "fictional requirement", base,
+                               explicit_ignored_files=("ignored.py",))
+    (root / "ignored.py").unlink()
+    secret = root / "secrets" / "token.json"
+    secret.parent.mkdir()
+    secret.write_text('{"fictional": true}', encoding="utf-8")
+    with pytest.raises(ValueError, match="unapproved ignored paths"):
+        collect_review_package(root, "fictional requirement", base)
+    with pytest.raises(ValueError, match="not allowed"):
+        collect_review_package(root, "fictional requirement", base,
+                               explicit_ignored_files=("secrets/token.json",))
+    with pytest.raises(ValueError, match="not ignored"):
+        collect_review_package(root, "fictional requirement", base,
+                               explicit_ignored_files=("new.py",))
+
+
+def test_real_git_snapshot_refreshes_between_rounds(tmp_path):
+    root, base = _real_git_workspace(tmp_path)
+    (root / ".gitignore").write_text(
+        ".venv/\ntmp/\n__pycache__/\nsecrets/\nignored.py\n"
+        ".fictional-agent-workspace\n*.cache\n",
+        encoding="utf-8"
+    )
+    (root / "new.py").write_text("first = True\n", encoding="utf-8")
+    (root / "code.py").write_text("version = 1\n", encoding="utf-8")
+    first = collect_review_package(root, "fictional requirement", base)
+    (root / "new.py").write_text("second = True\n", encoding="utf-8")
+    (root / "code.py").write_text("version = 2\n", encoding="utf-8")
+    second = collect_review_package(root, "fictional requirement", base)
+    assert "diff --git a/.gitignore b/.gitignore" in first.changes
+    assert first.changes != second.changes
+    assert first.new_files["new.py"] == "first = True\n"
+    assert second.new_files["new.py"] == "second = True\n"
+
+
+def test_real_git_changed_ignore_cannot_hide_new_python_file(tmp_path):
+    root, base = _real_git_workspace(tmp_path)
+    (root / ".gitignore").write_text(
+        (root / ".gitignore").read_text(encoding="utf-8") + "*.py\n",
+        encoding="utf-8"
+    )
+    (root / "new.py").write_text("hidden = True\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unapproved ignored paths"):
+        collect_review_package(root, "fictional requirement", base)
+
+
+def test_real_git_new_visible_ignore_and_source_reach_review(tmp_path):
+    root, base = _real_git_workspace(tmp_path)
+    feature = root / "feature"
+    feature.mkdir()
+    (feature / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    (feature / "new.py").write_text("visible = True\n", encoding="utf-8")
+    package = collect_review_package(root, "fictional requirement", base)
+    assert package.new_files == {
+        "feature/.gitignore": "*.tmp\n",
+        "feature/new.py": "visible = True\n",
+    }
+
+
+def test_real_git_snapshot_failure_cannot_approve(tmp_path, monkeypatch):
+    root, base = _real_git_workspace(tmp_path)
+    feature = root / "feature"
+    feature.mkdir()
+    (feature / ".gitignore").write_text("*\n", encoding="utf-8")
+    (feature / "hidden.py").write_text("hidden = True\n", encoding="utf-8")
+    ignored = subprocess.run(["git", "check-ignore", "-q", "--", "feature/.gitignore"],
+                             cwd=root, check=False, capture_output=True)
+    assert ignored.returncode == 0  # The new .gitignore hides itself.
+    monkeypatch.setattr("agent_loop.live.LIVE_ISOLATION_VERIFIED", True)
+    real_run = live_module._run
+
+    def git_only(args, **kwargs):
+        if args[0] != "git":
+            pytest.fail("Claude CLI started after snapshot failure")
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr("agent_loop.live._run", git_only)
+
+    class FakeCodex:
+        def run(self, task, feedback):
+            return "fictional edit"
+
+    class FakeTests:
+        def run(self):
+            return LoopTestResult("passed", "1 passed")
+
+    report = run_loop("fictional task", FakeCodex(), FakeTests(),
+                      LiveClaude(root, "fictional requirement", base))
+    assert report.stop_reason == "tool_error"
+    assert report.error == "ReviewIntegrityError"
+    assert report.rounds[0].review is None
 
 
 def test_claude_does_not_start_when_snapshot_collection_fails(fictional, monkeypatch):
@@ -420,6 +571,8 @@ def test_snapshot_rejects_sensitive_paths_and_content(fictional, monkeypatch, na
         if args[0] == "rev-parse":
             return BASE
         if args[0] == "ls-files":
+            if "--ignored" in args:
+                return ""
             return name + "\0"
         return ""
 
