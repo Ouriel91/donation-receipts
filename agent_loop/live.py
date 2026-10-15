@@ -33,8 +33,9 @@ ALLOWED_SUFFIXES = frozenset({".py", ".md", ".txt", ".toml", ".json", ".yaml",
 BLOCKED_PARTS = frozenset({"accounts", "receipts", "reports", "secrets", "credentials",
                            "data", ".env", ".venv", "venv", "tmp", ".git"})
 BLOCKED_NAMES = frozenset({"token.json", "credentials.json", "config.local.json"})
-RUNTIME_PARTS = frozenset({".venv", "venv", "tmp", "__pycache__", ".pytest_cache",
-                           ".mypy_cache", ".ruff_cache", "node_modules"})
+APPROVED_RUNTIME_ROOTS = frozenset({".venv", "venv", "tmp", ".pytest_cache",
+                                    ".mypy_cache", ".ruff_cache", "node_modules"})
+APPROVED_IGNORED_FILES = frozenset({".fictional-agent-workspace"})
 SENSITIVE_CONTENT = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,})\b|"
     r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
@@ -43,6 +44,10 @@ SENSITIVE_CONTENT = re.compile(
 
 class OutputLimitError(ValueError):
     """A child produced more stdout than the adapter permits."""
+
+
+class ReviewIntegrityError(ValueError):
+    """Ignored workspace content makes the review snapshot incomplete."""
 
 CODEX_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -303,19 +308,25 @@ def _git(root: Path, *args: str) -> str:
                 cwd=root, prompt=None, timeout=30).stdout
 
 
-def _paths(raw: str, root: Path) -> list[str]:
+def _git_names(raw: str) -> list[str]:
     if raw and not raw.endswith("\0"):
         raise ValueError("Invalid Git path list")
     names = raw[:-1].split("\0") if raw else []
-    if len(names) != len(set(names)):
+    if len(names) != len(set(names)) or any(not name for name in names):
         raise ValueError("Duplicate Git paths")
+    return names
+
+
+def _paths(raw: str, root: Path) -> list[str]:
+    names = _git_names(raw)
     for name in names:
         parts = name.replace("\\", "/").split("/")
         if (not name or name.startswith(("/", "\\")) or ":" in name or
             any(part in ("", ".", "..") for part in parts) or
             any(part.lower() in BLOCKED_PARTS for part in parts) or
             parts[-1].lower() in BLOCKED_NAMES or
-            Path(name).suffix.lower() not in ALLOWED_SUFFIXES):
+            (Path(name).suffix.lower() not in ALLOWED_SUFFIXES and
+             name != ".fictional-agent-workspace" and parts[-1].lower() != ".gitignore")):
             raise ValueError("Review path is not allowed")
         path = root / name
         if path.is_symlink() or (path.exists() and not path.resolve(strict=True).is_relative_to(root)):
@@ -329,21 +340,58 @@ def _safe_content(value: str) -> str:
     return value
 
 
-def _snapshot(root: Path, base_commit: str) -> tuple[str, dict[str, str]]:
+def _check_ignored_integrity(root: Path, explicit: list[str]) -> None:
+    # --directory folds an ignored tree into one path, so .venv never floods
+    # stdout. A non-runtime ignored path is an incomplete review snapshot.
+    raw = _git(root, "ls-files", "-z", "--others", "--ignored",
+               "--exclude-standard", "--directory")
+    try:
+        names = _git_names(raw)
+    except ValueError:
+        raise ReviewIntegrityError("Review ignored path listing is invalid") from None
+    for name in names:
+        parts = name.replace("\\", "/").rstrip("/").split("/")
+        if (name.startswith(("/", "\\")) or ":" in name or
+            any(part in ("", ".", "..") for part in parts)):
+            raise ReviewIntegrityError("Review snapshot contains an unsafe ignored path")
+        path = root.joinpath(*parts)
+        if path.is_symlink() or not path.resolve(strict=True).is_relative_to(root):
+            raise ReviewIntegrityError("Review snapshot contains an unsafe ignored path")
+        relative = "/".join(parts)
+        if relative in APPROVED_IGNORED_FILES and path.is_file():
+            continue
+        runtime = (relative in APPROVED_RUNTIME_ROOTS or
+                   (parts[-1] == "__pycache__" and
+                    not any(part.lower() in BLOCKED_PARTS for part in parts[:-1])))
+        if runtime and path.is_dir():
+            continue
+        if relative in explicit and path.is_file():
+            continue
+        raise ReviewIntegrityError("Review snapshot contains unapproved ignored paths")
+
+
+def _snapshot(root: Path, base_commit: str,
+              explicit_ignored_files: tuple[str, ...]) -> tuple[str, dict[str, str]]:
     changed = _paths(_git(root, "diff", "--no-ext-diff", "--no-textconv",
                           "--no-renames", "--name-only", "-z", base_commit, "--"), root)
-    # Include ignored source files too. Only known local runtime artifacts are
-    # omitted; any other ignored path must pass the same review filters.
-    untracked_raw = _git(root, "ls-files", "-z", "--others")
-    if untracked_raw and not untracked_raw.endswith("\0"):
-        raise ValueError("Invalid Git path list")
-    untracked_names = untracked_raw[:-1].split("\0") if untracked_raw else []
-    review_names = [
-        name for name in untracked_names
-        if name != ".fictional-agent-workspace" and
-        not set(name.replace("\\", "/").lower().split("/")) & RUNTIME_PARTS
-    ]
-    untracked = _paths("\0".join(review_names) + ("\0" if review_names else ""), root)
+    untracked = _paths(_git(root, "ls-files", "-z", "--others", "--exclude-standard"), root)
+    untracked = [name for name in untracked if name != ".fictional-agent-workspace"]
+    if not isinstance(explicit_ignored_files, tuple) or any(
+        not isinstance(name, str) for name in explicit_ignored_files
+    ):
+        raise ValueError("Explicit review paths must be a tuple of strings")
+    explicit = _paths("".join(name + "\0" for name in explicit_ignored_files), root)
+    if tuple(explicit) != explicit_ignored_files or ".fictional-agent-workspace" in explicit:
+        raise ValueError("Invalid explicit review path")
+    for name in explicit:
+        ignored = _git(root, "ls-files", "-z", "--others", "--ignored",
+                       "--exclude-standard", "--", ":(literal)" + name)
+        if ignored != name + "\0":
+            raise ValueError("Explicit review file is not ignored by Git")
+    _check_ignored_integrity(root, explicit)
+    untracked.extend(explicit)
+    if len(untracked) != len(set(untracked)):
+        raise ValueError("Duplicate review paths")
     if set(changed) & set(untracked):
         raise ValueError("Overlapping review paths")
     diff = _git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
@@ -367,7 +415,8 @@ def _snapshot(root: Path, base_commit: str) -> tuple[str, dict[str, str]]:
     return diff, new_files
 
 
-def collect_review_package(root: Path, requirements: str, base_commit: str) -> ReviewPackage:
+def collect_review_package(root: Path, requirements: str, base_commit: str,
+                           explicit_ignored_files: tuple[str, ...] = ()) -> ReviewPackage:
     """Take two matching read-only snapshots; fail closed on change or Git error."""
     if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", base_commit):
         raise ValueError("Review base must be a full commit ID")
@@ -375,8 +424,8 @@ def collect_review_package(root: Path, requirements: str, base_commit: str) -> R
         raise ValueError("Review workspace is not the Git root")
     if _git(root, "rev-parse", "--verify", f"{base_commit}^{{commit}}").strip().lower() != base_commit.lower():
         raise ValueError("Review base is not an exact commit")
-    first = _snapshot(root, base_commit)
-    second = _snapshot(root, base_commit)
+    first = _snapshot(root, base_commit, explicit_ignored_files)
+    second = _snapshot(root, base_commit, explicit_ignored_files)
     if first != second:
         raise ValueError("Review workspace changed during snapshot")
     return ReviewPackage(_small(_safe_content(requirements), MAX_PROMPT), *second)
@@ -389,10 +438,12 @@ class LiveClaude:
     base_commit: str
     executable: str = "claude"
     timeout: int = 600
+    explicit_ignored_files: tuple[str, ...] = ()
 
     def review(self, task: str, implementation: str, tests: TestResult) -> str:
         root = _gate(self.workspace)
-        package = collect_review_package(root, self.requirements, self.base_commit)
+        package = collect_review_package(root, self.requirements, self.base_commit,
+                                         self.explicit_ignored_files)
         payload = {
             "task": _safe_content(_small(task, MAX_PROMPT)),
             "requirements": package.requirements,
