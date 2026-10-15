@@ -19,7 +19,7 @@ Use `README.md` and `docs/PROJECT_CONTEXT.md` for project context, and `docs/RUN
 - Prefer deterministic local tests, fake data, mocked providers, and harness coverage before manual Gmail checks. Add meaningful tests for behavior changes, especially critical file operations and recurring faults. Do not require real Gmail for automated tests.
 - Before running a command, check whether it reads or changes real data or uses an external service. A Gmail dry run still accesses Gmail. Do not run Gmail or destructive rebuilds as part of an ordinary test gate.
 - Report tests as **passed**, **failed**, or **not run**, with command and environment limits. Do not present setup errors as product failures or partial runs as full passes.
-- The full suite last passed on Python 3.14.5 and pytest 9.0.3: **315 passed** with a fresh `--basetemp`. From the repo root in Windows PowerShell, a normal run can use:
+- The full suite last passed on Python 3.14.5 and pytest 9.0.3: **340 passed** with a fresh `--basetemp`. From the repo root in Windows PowerShell, a normal run can use:
 
   ```powershell
   $parent = Join-Path (Get-Location) ("tmp/pytest-parent-" + [guid]::NewGuid().ToString('N'))
