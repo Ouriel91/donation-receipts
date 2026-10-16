@@ -65,7 +65,8 @@ def _mock_process(monkeypatch, handler):
         def close_tree(self):
             pass
 
-    monkeypatch.setattr("agent_loop.live._start_process", lambda args, cwd: FakeProcess(args, cwd=cwd))
+    monkeypatch.setattr("agent_loop.live._start_process",
+                        lambda args, cwd, env: FakeProcess(args, cwd=cwd, env=env))
     return processes
 
 
@@ -92,7 +93,7 @@ def _real_git_workspace(tmp_path):
     (root / "code.py").write_text("version = 0\n", encoding="utf-8")
 
     def git(*args):
-        return subprocess.run(["git", *args], cwd=root, check=True,
+        return subprocess.run(["git", "-c", "core.autocrlf=false", *args], cwd=root, check=True,
                               capture_output=True, text=True).stdout.strip()
 
     git("init", "-q")
@@ -143,11 +144,12 @@ def test_codex_schema_prompt_and_feedback(fictional, monkeypatch):
     adapter = LiveCodex(root)
     assert adapter.run("fictional task", "Fix fake failure") == "Made a fictional edit"
     args, kwargs = seen[0]
-    assert args[:2] == ["codex", "exec"]
+    assert args[:4] == ["codex", "--ask-for-approval", "never", "exec"]
     assert args[args.index("--sandbox") + 1] == "workspace-write"
     assert args[args.index("--ask-for-approval") + 1] == "never"
     assert json.loads(processes[0].stdin.getvalue())["previous_feedback"] == "Fix fake failure"
     assert kwargs["cwd"] == root and processes[0].wait_timeouts[0] == 600
+    assert "ANTHROPIC_API_KEY" not in kwargs["env"]
 
 
 @pytest.mark.parametrize("answer,code,error", [
@@ -524,7 +526,7 @@ def test_real_git_snapshot_failure_cannot_approve(tmp_path, monkeypatch):
     real_run = live_module._run
 
     def git_only(args, **kwargs):
-        if args[0] != "git":
+        if not Path(args[0]).name.lower().startswith("git"):
             pytest.fail("Claude CLI started after snapshot failure")
         return real_run(args, **kwargs)
 
@@ -620,3 +622,14 @@ def test_windows_timeout_kills_child_holding_pipes(tmp_path):
             api.CloseHandle(handle)
     else:
         assert ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: PID is gone
+
+
+def test_windows_ignored_runtime_names_are_case_insensitive(tmp_path, monkeypatch):
+    if os.name != "nt":
+        pytest.skip("Windows path semantics")
+    from agent_loop import live
+
+    (tmp_path / "NODE_MODULES").mkdir()
+    (tmp_path / "src" / "__PYCACHE__").mkdir(parents=True)
+    monkeypatch.setattr(live, "_git", lambda *args: "NODE_MODULES/\0src/__PYCACHE__/\0")
+    live._check_ignored_integrity(tmp_path, [])
