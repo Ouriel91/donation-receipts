@@ -7,6 +7,7 @@ independent Windows isolation check is implemented and verified.
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -26,6 +27,10 @@ MAX_OUTPUT = 64 * 1024
 MAX_SUMMARY = 2048
 MAX_REVIEW = 8192
 PROCESS_CLEANUP_SECONDS = 3
+CHILD_ENV_KEYS = frozenset({"TEMP", "TMP", "PATH", "PYTHONNOUSERSITE",
+                            "PYTHONDONTWRITEBYTECODE", "GIT_CONFIG_NOSYSTEM",
+                            "GIT_CONFIG_GLOBAL", "GIT_OPTIONAL_LOCKS"})
+WINDOWS_CHILD_ENV_KEYS = CHILD_ENV_KEYS | {"SystemRoot", "WINDIR"}
 MAX_DIFF = 48 * 1024
 MAX_NEW_FILE = 16 * 1024
 ALLOWED_SUFFIXES = frozenset({".py", ".md", ".txt", ".toml", ".json", ".yaml",
@@ -110,9 +115,47 @@ class _ManagedProcess:
             self.job.close()
 
 
-def _start_process(args: list[str], cwd: Path) -> _ManagedProcess:
+def _child_env(cwd: Path) -> dict[str, str]:
+    """Pass only guest-local runtime paths; never inherit caller credentials."""
+    runtime = _runtime_directory(cwd, "agent-loop-process")
+    env = {"TEMP": str(runtime), "TMP": str(runtime),
+           "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_OPTIONAL_LOCKS": "0"}
+    if os.name == "nt":
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            raise RuntimeError("Windows system root is unavailable")
+        system_root = buffer.value
+        env["SystemRoot"] = system_root
+        env["WINDIR"] = system_root
+        env["PATH"] = os.pathsep.join((str(Path(system_root) / "System32"), system_root))
+    else:
+        env["PATH"] = os.defpath
+    expected = WINDOWS_CHILD_ENV_KEYS if os.name == "nt" else CHILD_ENV_KEYS
+    if {key.casefold() for key in env} != {key.casefold() for key in expected}:
+        raise RuntimeError("Child environment is outside its allowlist")
+    return env
+
+
+def _runtime_directory(root: Path, name: str) -> Path:
+    parent = root / "tmp"
+    if parent.is_symlink() or (parent.exists() and not parent.resolve(strict=True).is_relative_to(root)):
+        raise ValueError("Workspace runtime path is unsafe")
+    parent.mkdir(exist_ok=True)
+    target = parent / name
+    if target.is_symlink() or (target.exists() and not target.resolve(strict=True).is_relative_to(root)):
+        raise ValueError("Workspace runtime path is unsafe")
+    target.mkdir(exist_ok=True)
+    return target
+
+
+def _start_process(args: list[str], cwd: Path, env: dict[str, str]) -> _ManagedProcess:
     options = {"cwd": cwd, "stdin": subprocess.PIPE,
-               "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+               "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+               "env": env, "close_fds": True}
     if os.name != "nt":
         return _ManagedProcess(subprocess.Popen(args, start_new_session=True, **options))
     from agent_loop.windows_job import WindowsJob
@@ -137,7 +180,7 @@ def _run(args: list[str], *, cwd: Path, prompt: str | None, timeout: int,
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600:
         raise ValueError("CLI timeout must be between 1 and 3600 seconds")
     try:
-        process = _start_process(args, cwd)
+        process = _start_process(args, cwd, _child_env(cwd))
     except OSError:
         raise RuntimeError("CLI could not complete") from None
     output = bytearray()
@@ -223,12 +266,13 @@ class LiveCodex:
         root = _gate(self.workspace)
         request = {"task": _small(task, MAX_PROMPT), "previous_feedback": feedback}
         prompt = _small(json.dumps(request, ensure_ascii=False), MAX_PROMPT)
-        with tempfile.TemporaryDirectory(prefix="agent-schema-") as temp:
+        schema_parent = _runtime_directory(root, "agent-loop-schema")
+        with tempfile.TemporaryDirectory(prefix="agent-schema-", dir=schema_parent) as temp:
             schema = Path(temp) / "codex-schema.json"
             answer = Path(temp) / "codex-answer.json"
             schema.write_text(json.dumps(CODEX_SCHEMA), encoding="utf-8")
-            _run([self.executable, "exec", "--sandbox", "workspace-write",
-                  "--ask-for-approval", "never", "--ignore-user-config",
+            _run([self.executable, "--ask-for-approval", "never", "exec",
+                  "--sandbox", "workspace-write", "--ignore-user-config",
                   "--ephemeral", "--skip-git-repo-check", "--output-schema",
                   str(schema), "--output-last-message", str(answer), "-"],
                  cwd=root, prompt=prompt, timeout=self.timeout)
@@ -304,7 +348,10 @@ class ReviewPackage:
 
 
 def _git(root: Path, *args: str) -> str:
-    return _run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", *args],
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError("Git executable is unavailable")
+    return _run([git, "--no-optional-locks", "-c", "core.fsmonitor=false", *args],
                 cwd=root, prompt=None, timeout=30).stdout
 
 
@@ -360,8 +407,10 @@ def _check_ignored_integrity(root: Path, explicit: list[str]) -> None:
         relative = "/".join(parts)
         if relative in APPROVED_IGNORED_FILES and path.is_file():
             continue
-        runtime = (relative in APPROVED_RUNTIME_ROOTS or
-                   (parts[-1] == "__pycache__" and
+        runtime_name = relative.casefold() if os.name == "nt" else relative
+        cache_name = parts[-1].casefold() if os.name == "nt" else parts[-1]
+        runtime = (runtime_name in APPROVED_RUNTIME_ROOTS or
+                   (cache_name == "__pycache__" and
                     not any(part.lower() in BLOCKED_PARTS for part in parts[:-1])))
         if runtime and path.is_dir():
             continue

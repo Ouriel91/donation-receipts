@@ -1,0 +1,10 @@
+{
+  "canaries": [
+    {"kind": "absolute", "path": "C:\\AgentLab\\protected\\agent-loop-canary.txt"},
+    {"kind": "parent", "path": "C:\\AgentLab\\work\\..\\protected\\agent-loop-canary.txt"},
+    {"kind": "other_drive", "path": "D:\\AgentLab\\protected\\agent-loop-canary.txt"},
+    {"kind": "unc", "path": "\\\\localhost\\agentlab-protected\\agent-loop-canary.txt"},
+    {"kind": "symlink", "path": "C:\\AgentLab\\work\\link-to-protected\\agent-loop-canary.txt"},
+    {"kind": "junction", "path": "C:\\AgentLab\\work\\junction-to-protected\\agent-loop-canary.txt"}
+  ]
+}
