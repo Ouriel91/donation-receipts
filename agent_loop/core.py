@@ -98,11 +98,14 @@ def parse_review(raw: str) -> dict:
 
 
 def run_loop(task: str, codex: CodexAdapter, tests: TestAdapter,
-             claude: ClaudeAdapter, max_rounds: int = 3) -> Report:
+             claude: ClaudeAdapter, max_rounds: int = 3,
+             review_only: bool = False) -> Report:
     if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or not 1 <= max_rounds <= 3:
         raise ValueError("max_rounds must be between 1 and 3")
     if not isinstance(task, str) or not task.strip():
         raise ValueError("Task must be nonempty")
+    if review_only and max_rounds != 1:
+        raise ValueError("Read-only review must use one round")
 
     rounds: list[RoundResult] = []
     feedback = None
@@ -128,9 +131,9 @@ def run_loop(task: str, codex: CodexAdapter, tests: TestAdapter,
         } or not isinstance(test_result.detail, str) or not test_result.detail.strip():
             return Report("invalid_output", "Inspect the test result manually.", rounds)
         round_result.tests = test_result
-        if test_result.status == "not_run":
+        if test_result.status == "not_run" and not review_only:
             return Report("tests_not_run", "Run tests or resolve the environment issue manually.", rounds)
-        if test_result.status == "failed":
+        if test_result.status == "failed" and not review_only:
             feedback = f"Tests failed: {test_result.detail}"
             continue
 
@@ -150,6 +153,9 @@ def run_loop(task: str, codex: CodexAdapter, tests: TestAdapter,
             return Report("human_decision", "Ask a person to decide on the review findings.", rounds)
         if review["status"] == "approved":
             return Report("success", "Review the report and decide whether to commit manually.", rounds)
+        if review_only:
+            return Report("changes_requested",
+                          "Fix the findings separately, then review a new target commit.", rounds)
         feedback = "Review fixes: " + "; ".join(
             item["summary"] for item in review["findings"] if item["kind"] == "fix"
         )
