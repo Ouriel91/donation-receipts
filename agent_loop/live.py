@@ -175,12 +175,13 @@ def _start_process(args: list[str], cwd: Path, env: dict[str, str]) -> _ManagedP
 
 
 def _run(args: list[str], *, cwd: Path, prompt: str | None, timeout: int,
-         exit_codes: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
+         exit_codes: tuple[int, ...] = (0,),
+         child_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Drain both streams with bounded retention; never expose stderr or prompts."""
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600:
         raise ValueError("CLI timeout must be between 1 and 3600 seconds")
     try:
-        process = _start_process(args, cwd, _child_env(cwd))
+        process = _start_process(args, cwd, _child_env(cwd) if child_env is None else child_env)
     except OSError:
         raise RuntimeError("CLI could not complete") from None
     output = bytearray()
