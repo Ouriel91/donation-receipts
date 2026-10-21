@@ -30,6 +30,9 @@ adapter failure or invalid review JSON it also contains optional `error` with
 only the exception type (for example, `RuntimeError` or `JSONDecodeError`).
 Raw exception messages are excluded because they may contain sensitive text.
 
+An opt-in fictional CLI demonstration uses the same core without opening the
+production Live adapters; see [`AGENT_LOOP_DEMO.md`](AGENT_LOOP_DEMO.md).
+
 The core uses adapter protocols and phase 1 CLI adapters have been prepared.
 They are not connected to this Mock command. Before connecting them, provide
 an isolated workspace without product data, enforce filesystem and command
