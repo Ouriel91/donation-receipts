@@ -38,6 +38,47 @@ def test_non_string():
     with pytest.raises(TypeError):
         normalize_username(None)
 '''
+DATE_TASK = ("Implement is_donation_in_approval_period(donation_date, start_date, end_date) "
+             "in example.py. The three inputs must be datetime.date objects (the runner "
+             "provides date); raise TypeError for any other input. Raise ValueError if "
+             "start_date is after end_date. Return True when donation_date is within "
+             "the approval period, including both endpoints, otherwise False. "
+             "Return only Python source for one function, with no imports, decorators, "
+             "commands, tests, or Markdown fences. Use only if, isinstance, comparisons, "
+             "return, and raise; do not call date constructors or methods.")
+DATE_TEST_SOURCE = '''from datetime import date
+import pytest
+from example import is_donation_in_approval_period
+
+def test_start_and_end_are_included():
+    start, end = date(2024, 1, 1), date(2024, 12, 31)
+    assert is_donation_in_approval_period(start, start, end) is True
+    assert is_donation_in_approval_period(end, start, end) is True
+
+def test_outside_period():
+    start, end = date(2024, 1, 1), date(2024, 12, 31)
+    assert is_donation_in_approval_period(date(2023, 12, 31), start, end) is False
+    assert is_donation_in_approval_period(date(2025, 1, 1), start, end) is False
+
+def test_single_day_and_leap_day():
+    day = date(2024, 2, 29)
+    assert is_donation_in_approval_period(day, day, day) is True
+
+@pytest.mark.parametrize("values", [
+    ("2024-02-30", date(2024, 1, 1), date(2024, 12, 31)),
+    (date(2024, 6, 1), None, date(2024, 12, 31)),
+    (date(2024, 6, 1), date(2024, 1, 1), "2024-12-31"),
+])
+def test_invalid_date_inputs(values):
+    with pytest.raises(TypeError):
+        is_donation_in_approval_period(*values)
+
+def test_reversed_period():
+    with pytest.raises(ValueError):
+        is_donation_in_approval_period(date(2024, 6, 1), date(2024, 12, 31), date(2024, 1, 1))
+'''
+TASKS = {"username": (TASK, TEST_SOURCE, ""),
+         "section46": (DATE_TASK, DATE_TEST_SOURCE, "from datetime import date\n\n")}
 CODEX_SCHEMA = {"type": "object", "additionalProperties": False,
                 "properties": {"code": {"type": "string"}}, "required": ["code"]}
 REVIEW_SCHEMA = {"type": "object", "additionalProperties": False,
@@ -53,7 +94,7 @@ REVIEW_SCHEMA = {"type": "object", "additionalProperties": False,
 MAX_CODE = 8192
 MAX_PROMPT = 16 * 1024
 CODEX_VERSION = "codex-cli 0.163.0"
-CLAUDE_VERSION = "2.1.280 (Claude Code)"
+CLAUDE_VERSIONS = frozenset({"2.1.280 (Claude Code)", "2.1.316 (Claude Code)"})
 
 
 def _small(value: str, limit: int) -> str:
@@ -62,35 +103,45 @@ def _small(value: str, limit: int) -> str:
     return value
 
 
-def _validate_code(code: str) -> str:
+def _validate_code(code: str, task_name: str = "username") -> str:
     """Accept only a small, inspectable function language before execution."""
     _small(code, MAX_CODE)
     tree = ast.parse(code)
     if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
         raise ValueError("Expected one function only")
     function = tree.body[0]
-    if (function.name != "normalize_username" or function.decorator_list or
+    expected_name = "normalize_username" if task_name == "username" else "is_donation_in_approval_period"
+    expected_args = ("username",) if task_name == "username" else ("donation_date", "start_date", "end_date")
+    if task_name not in TASKS:
+        raise ValueError("Unknown fictional task")
+    if (function.name != expected_name or function.decorator_list or
         function.args.posonlyargs or function.args.kwonlyargs or function.args.vararg or
         function.args.kwarg or function.args.defaults or function.args.kw_defaults or
-        len(function.args.args) != 1 or function.args.args[0].arg != "username"):
+        tuple(arg.arg for arg in function.args.args) != expected_args):
         raise ValueError("Unexpected function signature")
     allowed = (ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Return,
                ast.If, ast.Raise, ast.Assign, ast.Name, ast.Load, ast.Store,
                ast.Call, ast.Attribute, ast.Constant, ast.Compare, ast.UnaryOp,
                ast.Not, ast.Is, ast.IsNot, ast.Eq, ast.BoolOp, ast.And, ast.Or,
                ast.Expr)
+    if task_name == "section46":
+        allowed += (ast.Lt, ast.LtE, ast.Gt, ast.GtE)
     for node in ast.walk(tree):
         if not isinstance(node, allowed):
             raise ValueError("Code uses syntax outside the fictional task")
         if isinstance(node, ast.Name) and node.id.startswith("_"):
             raise ValueError("Private names are not allowed")
-        if isinstance(node, ast.Attribute) and node.attr not in {"strip", "casefold", "lower"}:
+        if isinstance(node, ast.Attribute) and (task_name != "username" or
+                                                node.attr not in {"strip", "casefold", "lower"}):
             raise ValueError("Only string normalization methods are allowed")
         if isinstance(node, ast.Call):
             target = node.func
             if node.keywords or not (
-                isinstance(target, ast.Attribute) and target.attr in {"strip", "casefold", "lower"}
-                or isinstance(target, ast.Name) and target.id in {"isinstance", "TypeError"}
+                task_name == "username" and isinstance(target, ast.Attribute) and
+                target.attr in {"strip", "casefold", "lower"}
+                or isinstance(target, ast.Name) and target.id in (
+                    {"isinstance", "TypeError"} if task_name == "username" else
+                    {"isinstance", "TypeError", "ValueError"})
             ):
                 raise ValueError("Call outside the fictional task")
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in {
@@ -129,10 +180,10 @@ def _commands() -> tuple[list[str], list[str], Path]:
 
 def _check_versions(command: Callable, codex: list[str], claude: list[str],
                     workspace: Path, env: dict[str, str]) -> None:
-    for args, expected in ((codex, CODEX_VERSION), (claude, CLAUDE_VERSION)):
+    for args, accepted in ((codex, {CODEX_VERSION}), (claude, CLAUDE_VERSIONS)):
         actual = command([*args, "--version"], cwd=workspace, prompt=None,
                          timeout=10, child_env=env).stdout.strip()
-        if actual != expected:
+        if actual not in accepted:
             raise RuntimeError("CLI version changed; verify demo flags before use")
 
 
@@ -142,6 +193,7 @@ class DemoCodex:
     command: Callable
     executable: list[str]
     env: dict[str, str]
+    task_name: str = "username"
     code: str | None = None
 
     def run(self, task: str, feedback: str | None) -> str:
@@ -164,7 +216,7 @@ class DemoCodex:
             answer = json.loads(_small(result.stdout, MAX_CODE + 1024))
             if not isinstance(answer, dict) or set(answer) != {"code"}:
                 raise ValueError("Unexpected Codex answer")
-            self.code = _validate_code(answer["code"])
+            self.code = _validate_code(answer["code"], self.task_name)
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError("Invalid Codex answer") from None
         return self.code
@@ -177,8 +229,11 @@ class DemoTests:
     command: Callable
     env: dict[str, str]
     approve: Callable[[str], bool]
+    task_name: str = "username"
+    tested_code: bytes | None = None
 
     def run(self) -> TestResult:
+        self.tested_code = None
         code = self.codex.code
         if code is None:
             raise ValueError("No fictional code to test")
@@ -187,7 +242,11 @@ class DemoTests:
         target = self.workspace / "example.py"
         if target.is_symlink():
             raise ValueError("Fictional target is a link")
-        target.write_text(code, encoding="utf-8")  # Only the runner persists model code.
+        code_bytes = code.encode("utf-8")
+        source_bytes = TASKS[self.task_name][2].encode("utf-8") + code_bytes
+        target.write_bytes(source_bytes)  # Only the runner persists model code; preserve its bytes.
+        if target.read_bytes() != source_bytes:
+            return TestResult("not_run", "Fictional source changed before pytest")
         parent = self.workspace / ("pytest-" + uuid4().hex)
         parent.mkdir()
         result_path = parent / "result.xml"
@@ -198,6 +257,8 @@ class DemoTests:
                                    "--junitxml", str(result_path)],
                                   cwd=self.workspace, prompt=None, timeout=30,
                                   exit_codes=(0, 1), child_env=self.env)
+            if target.read_bytes() != source_bytes:
+                return TestResult("not_run", "Fictional source changed during pytest")
             if result_path.stat().st_size > 64 * 1024:
                 raise ValueError("Test report is too large")
             node = ET.parse(result_path).getroot()
@@ -212,6 +273,7 @@ class DemoTests:
                 raise ValueError("Invalid test counts")
             detail = f"{passed} passed, {failed} failed, {errors} errors, {skipped} skipped"
             if result.returncode == 0 and failed == errors == 0:
+                self.tested_code = code_bytes
                 return TestResult("passed", detail)
             if result.returncode == 1 and failed + errors > 0:
                 return TestResult("failed", detail)
@@ -226,8 +288,14 @@ class DemoClaude:
     command: Callable
     executable: list[str]
     env: dict[str, str]
+    tests: DemoTests
 
     def review(self, task: str, implementation: str, tests: TestResult) -> str:
+        tested_code = self.tests.tested_code
+        if (tested_code is None or implementation.encode("utf-8") != tested_code or
+            (self.workspace / "example.py").read_bytes() !=
+                TASKS[self.tests.task_name][2].encode("utf-8") + tested_code):
+            raise ValueError("Reviewed code differs from tested code")
         prompt = _small(json.dumps({"instruction": "Review only the supplied fictional function and test result. Use no tools.",
                                     "task": task, "code": implementation,
                                     "tests": {"status": tests.status, "detail": tests.detail}},
@@ -253,11 +321,14 @@ class DemoClaude:
             raise ValueError("Invalid Claude review") from None
 
 
-def run_demo(*, run_models: bool = False, approve: Callable[[str], bool], command: Callable = _run,
+def run_demo(*, run_models: bool = False, approve: Callable[[str], bool], task_name: str = "username",
+             command: Callable = _run,
              commands: tuple[list[str], list[str], Path] | None = None) -> Report:
-    """Run one fixed task. The caller must opt in before calling this function."""
+    """Run one selected fixed task. The caller must opt in before calling this function."""
     if run_models is not True:
         raise PermissionError("Explicit model opt-in is required")
+    if task_name not in TASKS:
+        raise ValueError("Unknown fictional task")
     repo = Path(__file__).resolve().parent.parent
     temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
     if temp_root.is_relative_to(repo):
@@ -267,23 +338,28 @@ def run_demo(*, run_models: bool = False, approve: Callable[[str], bool], comman
         workspace = Path(name).resolve(strict=True)
         if workspace.is_relative_to(repo):
             raise ValueError("Demo workspace must be outside the repository")
-        (workspace / "test_example.py").write_text(TEST_SOURCE, encoding="utf-8")
+        task, test_source, _ = TASKS[task_name]
+        (workspace / "test_example.py").write_text(test_source, encoding="utf-8")
         env = _demo_env(workspace, node)
         _check_versions(command, codex_args, claude_args, workspace, env)
-        codex = DemoCodex(workspace, command, codex_args, env)
-        tests = DemoTests(workspace, codex, command, env, approve)
-        claude = DemoClaude(workspace, command, claude_args, env)
-        return run_loop(TASK, codex, tests, claude, max_rounds=3)
+        codex = DemoCodex(workspace, command, codex_args, env, task_name)
+        tests = DemoTests(workspace, codex, command, env, approve, task_name)
+        claude = DemoClaude(workspace, command, claude_args, env, tests)
+        return run_loop(task, codex, tests, claude, max_rounds=3)
 
 
 def _approve_code(code: str) -> bool:
-    print("\nFictional code proposed for execution:\n" + code + "\n", file=sys.stderr)
+    sys.stderr.buffer.write(b"\nFictional code proposed for execution:\n" +
+                            code.encode("utf-8") + b"\n\n")
+    sys.stderr.buffer.flush()
     return input("Type RUN to execute these fictional Python tests: ").strip() == "RUN"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Supervised fictional agent loop demo")
     parser.add_argument("--run-models", action="store_true", help="explicitly start the two CLI models")
+    parser.add_argument("--task", choices=tuple(TASKS), default="username",
+                        help="fixed fictional task (default: username)")
     args = parser.parse_args()
     if not args.run_models:
         parser.error("models are off by default; pass --run-models to opt in")
@@ -293,7 +369,7 @@ def main() -> int:
         print("Demo cancelled before any model call.", file=sys.stderr)
         return 1
     try:
-        report = run_demo(run_models=True, approve=_approve_code)
+        report = run_demo(run_models=True, approve=_approve_code, task_name=args.task)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Demo setup failed: {type(exc).__name__}", file=sys.stderr)
         return 1
