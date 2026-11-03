@@ -1,0 +1,13 @@
+{
+  "message_id": "msg_001",
+  "subject": "תודה על תרומתך",
+  "from": "donations@example.org",
+  "date": "2026-05-24",
+  "body": "מצורפת קבלה עבור תרומתך.",
+  "attachments": [
+    {
+      "filename": "receipt.pdf",
+      "content_type": "application/pdf"
+    }
+  ]
+}
