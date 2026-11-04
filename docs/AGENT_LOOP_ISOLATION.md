@@ -165,6 +165,22 @@ so bare `codex` and `claude` defaults are deliberately not ready for live use.
 
 ## Evidence matrix
 
+### Linux Docker test compatibility, 2026-11-03
+
+CPython may add `LC_CTYPE` after process launch when coercing the C locale to
+UTF-8. The preflight now checks the exact launcher environment first and
+recognizes only CPython's documented locale values in its Python child; an
+injected `LC_CTYPE` at launch still fails. The symlink test now isolates the
+link probe from unrelated writable runtime roots, which correctly take
+`FAIL` priority. The live gate and probe status precedence are unchanged.
+Windows focused tests: **69 passed, 2 skipped**; full pytest: **793 passed,
+2 skipped, 1 warning** with a fresh `--basetemp`. Linux Docker results are
+pending a rerun of the two reported cases and the full suite in the same
+Sandbox environment. No model was started, and no real data was accessed.
+One intermediate Windows focused run failed the existing handle-inheritance
+test; that test passed alone and in the final focused and full runs. The
+handle implementation was not changed.
+
 `PASS` applies only to the stated check, `FAIL` means a demonstrated security
 condition failed, `SKIPPED` means the test could not run, and `NOT_VERIFIED`
 means the needed condition or evidence is absent. Host test assertions that

@@ -35,8 +35,13 @@ def test_child_environment_omits_parent_secrets_and_uses_workspace_temp(tmp_path
     result = _run([sys.executable, "-c", "import json,os; print(json.dumps(dict(os.environ)))"],
                   cwd=root, prompt=None, timeout=10)
     actual = json.loads(result.stdout)
+    # CPython may add this locale key after exec when the child starts in the C locale.
+    if os.name != "nt" and "LC_CTYPE" in actual:
+        assert actual.pop("LC_CTYPE") in {"C.UTF-8", "C.utf8", "UTF-8"}
     assert {key.casefold() for key in actual} == {key.casefold() for key in allowed}
     assert "fictional-sensitive-value" not in result.stdout
+    assert isolation._env_status(root) == {
+        "status": "PASS", "reason": "environment_allowlisted"}
 
 
 @pytest.mark.parametrize("name", ["tmp"])
@@ -160,7 +165,7 @@ def test_missing_runtime_roots_are_not_os_denials(tmp_path):
     assert not (root / "node_modules").exists()  # Probe removed only its own fixture.
 
 
-def test_runtime_link_outside_workspace_is_not_verified(tmp_path):
+def test_runtime_link_outside_workspace_is_not_verified(tmp_path, monkeypatch):
     root = _fictional(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -168,7 +173,12 @@ def test_runtime_link_outside_workspace_is_not_verified(tmp_path):
         (root / "node_modules").symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("Creating a local test symlink is unavailable")
-    assert isolation._runtime_status(root)["status"] == "NOT_VERIFIED"
+    original_probe = isolation._probe_directory
+    monkeypatch.setattr(isolation, "_probe_directory", lambda path, where: (
+        original_probe(path, where) if path == root / "node_modules" else
+        {"status": "PASS", "reason": "mocked_denial"}))
+    assert isolation._runtime_status(root) == {
+        "status": "NOT_VERIFIED", "reason": "unsafe_probe_directory"}
 
 
 def test_sharing_violation_is_not_access_denied(tmp_path, monkeypatch):
@@ -186,11 +196,16 @@ def test_child_path_has_no_agent_writable_tool_directories(tmp_path):
     assert not any(part.startswith(str(root)) for part in child_path)
 
 
-def test_environment_probe_rejects_unlisted_child_variable(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name,value", [
+    ("EXTRA_FAKE_VALUE", "fictional"),
+    ("LC_CTYPE", "C.UTF-8"),
+])
+def test_environment_probe_rejects_unlisted_child_variable(tmp_path, monkeypatch,
+                                                            name, value):
     root = _fictional(tmp_path)
     original = live_module._child_env
     monkeypatch.setattr(live_module, "_child_env", lambda where:
-                        {**original(where), "EXTRA_FAKE_VALUE": "fictional"})
+                        {**original(where), name: value})
     assert isolation._env_status(root) == {
         "status": "NOT_VERIFIED", "reason": "environment_not_allowlisted"}
 
