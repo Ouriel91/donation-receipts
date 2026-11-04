@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+from agent_loop import live as live_module
 from agent_loop.live import (APPROVED_RUNTIME_ROOTS, CHILD_ENV_KEYS,
                              WINDOWS_CHILD_ENV_KEYS, _run, _workspace)
 
@@ -71,12 +72,18 @@ _HANDLE_PROBE = (
     "e.errno==errno.EBADF else 'handle_error')\n"
     "except ValueError: print('handle_error')\n"
 )
+# _env_status validates the launch keys first; CPython may then add LC_CTYPE
+# while coercing a C locale before the probe script starts.
 _ENV_PROBE = (
     "import json,os,sys\n"
     "allowed=set(json.loads(sys.argv[2])); root=os.path.normcase(sys.argv[1])\n"
     "try:\n"
     " paths=[os.path.normcase(os.path.abspath(os.environ[k])) for k in ('TEMP','TMP')]\n"
-    " ok={k.casefold() for k in os.environ}=={k.casefold() for k in allowed} "
+    " actual={k.casefold() for k in os.environ}; expected={k.casefold() for k in allowed}\n"
+    " coerced=(os.name!='nt' and actual-expected=={'lc_ctype'} "
+    "and actual-{'lc_ctype'}==expected and "
+    "os.environ.get('LC_CTYPE') in ('C.UTF-8','C.utf8','UTF-8'))\n"
+    " ok=(actual==expected or coerced) "
     "and all(os.path.commonpath([root,p])==root "
     "for p in paths)\n"
     " ok=ok and all(not os.path.normcase(os.path.abspath(p)).startswith(root+os.sep) "
@@ -416,9 +423,12 @@ def _env_status(workspace: Path) -> dict[str, str]:
     root = _fictional_root(workspace)
     try:
         expected = WINDOWS_CHILD_ENV_KEYS if os.name == "nt" else CHILD_ENV_KEYS
+        child_env = live_module._child_env(root)
+        if {key.casefold() for key in child_env} != {key.casefold() for key in expected}:
+            return _result(NOT_VERIFIED, "environment_not_allowlisted")
         allowed = json.dumps(sorted(expected))
         result = _run([sys.executable, "-c", _ENV_PROBE, str(root), allowed],
-                      cwd=root, prompt=None, timeout=5)
+                      cwd=root, prompt=None, timeout=5, child_env=child_env)
     except (OSError, RuntimeError, ValueError):
         return _result(NOT_VERIFIED, "environment_probe_failed")
     return (_result(PASS, "environment_allowlisted") if result.stdout.strip() == "allowlisted"
