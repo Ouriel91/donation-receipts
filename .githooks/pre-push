@@ -1,0 +1,12 @@
+#!/bin/sh
+# Fail closed if the project's Python is unavailable.
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+if [ -x .venv/Scripts/python.exe ]; then
+    exec .venv/Scripts/python.exe -m src.private_git_guard --repo "$root" --history --pre-push-input
+elif [ -x .venv/bin/python ]; then
+    exec .venv/bin/python -m src.private_git_guard --repo "$root" --history --pre-push-input
+fi
+printf '%s\n' 'Private-data guard blocked: project Python is unavailable.' >&2
+exit 1

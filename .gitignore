@@ -77,3 +77,15 @@ desktop.ini
 *.temp
 
 # Keep synthetic harness PDFs/JSON and examples tracked; do not ignore them by extension.
+
+# Official snapshots and evidence are operational, including nested exports.
+*.csv
+**/section46_evidence/
+**/snapshots/
+**/caches/
+**/.aws/
+*.sqlite
+*.db
+*.zip
+**/.agents/
+**/.codex/

@@ -43,6 +43,15 @@ def demo(tmp_path):
     cache.put("012345678", exists=True, approval_periods=[(date(2020, 1, 1), date(2020, 12, 31))],
               denial_periods=[(date(2021, 1, 1), date(2021, 12, 31))])
     cache.save()
+    cache.store_tax_evidence({
+        "registration_number": "012345678", "tax_file_number": "987654321",
+        "source_url": "https://www.gov.il/he/service/confirmation-of-donations",
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_sha256": "a" * 64,
+        "verification": "operator_attested_official_intervals",
+        "approval_periods": [["2020-01-01", "2020-12-31"]],
+        "denial_periods": [["2021-01-01", "2021-12-31"]],
+    })
     old = OrganizationCache(cache_path, clock=lambda: datetime.now(timezone.utc) - timedelta(days=3))
     old.put("123456789", exists=True, approval_periods=[(date(2020, 1, 1), date(2020, 12, 31))])
     old.save()
