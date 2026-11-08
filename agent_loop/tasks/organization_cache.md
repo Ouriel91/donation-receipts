@@ -1,4 +1,10 @@
-# Product task: local organization cache (contract v1)
+# Historical standalone cache prototype (contract v1)
+
+This retained profile tests a GENERATED STANDALONE v1 prototype, not the current
+repository cache with registry/tax metadata and shared locking helpers. Task 2
+uses separate refresh, tax-provider and privacy-guard profiles; the actual
+repository cache and Excel integration receive host tests and full-source review.
+Do not represent this legacy two-file profile as current-cache integration.
 
 ## Goal, scope and delivery
 
@@ -103,7 +109,9 @@ On failure propagate OSError, preserve previous destination bytes and remove
 the temporary file. Never truncate the destination in place. Reject symbolic
 links in the destination or any existing ancestor with ValueError on both load
 and save; recheck on save, including links introduced after construction. Do not
-follow links to unrelated files. No claim of adversarial TOCTOU protection,
+follow links to unrelated files. A stable regular non-symlink `.organization-cache.lock` sidecar may remain in
+the cache parent for cross-process serialization; no other extra files may
+remain after save, including failed saves. No claim of adversarial TOCTOU protection,
 multi-writer locking or directory-fsync power-loss durability is required here.
 
 ## Acceptance and review

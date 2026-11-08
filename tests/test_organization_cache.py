@@ -316,7 +316,10 @@ def test_save_is_atomic_and_fsynced(cache_type, tmp_path, clock, monkeypatch):
     monkeypatch.setattr(os, 'replace', replace)
     cache.save()
     assert 'replace' in events
-    assert set(tmp_path.iterdir()) == {path}
+    assert set(tmp_path.iterdir()) in ({path}, {path, tmp_path / '.organization-cache.lock'})
+    if (tmp_path / '.organization-cache.lock').exists():
+        assert (tmp_path / '.organization-cache.lock').is_file()
+        assert not (tmp_path / '.organization-cache.lock').is_symlink()
     assert set(json.loads(path.read_text())['organizations']) == {A, B}
 
 
@@ -336,7 +339,10 @@ def test_failed_save_preserves_old_bytes_and_cleans_temp(cache_type, tmp_path, c
     with pytest.raises(OSError):
         cache.save()
     assert path.read_bytes() == before
-    assert set(tmp_path.iterdir()) == {path}
+    assert set(tmp_path.iterdir()) in ({path}, {path, tmp_path / '.organization-cache.lock'})
+    if (tmp_path / '.organization-cache.lock').exists():
+        assert (tmp_path / '.organization-cache.lock').is_file()
+        assert not (tmp_path / '.organization-cache.lock').is_symlink()
 
 
 def test_symlink_destination_rejected_on_load_and_save(cache_type, tmp_path, clock):
