@@ -221,14 +221,17 @@ def test_invalid_recovery_audit_rejected(authorize, field, value):
         OrganizationCache._validate_registry(snapshot)
 
 
-def test_automatic_refresh_stays_strict(authorize, tmp_path):
+def test_automatic_refresh_accepts_only_approved_recovery(authorize, tmp_path):
     from src.registry_sync import refresh
     raw, first, last, _ = sample()
     authorize(raw, first, last)
     result = refresh(tmp_path, downloader=lambda: raw, clock=lambda: NOW)
-    assert result['status'] == 'unavailable'
-    assert result['reason'] == 'csv_invalid_or_abnormal_change'
-    assert not (tmp_path / 'organizations.json').exists()
+    assert result['status'] == 'success'
+    before = (tmp_path / 'organizations.json').read_bytes()
+    rejected = refresh(tmp_path, downloader=lambda: raw + b'\n', force=True, clock=lambda: NOW)
+    assert rejected['status'] == 'unavailable'
+    assert rejected['reason'] == 'csv_invalid_or_abnormal_change'
+    assert (tmp_path / 'organizations.json').read_bytes() == before
 
 
 def test_cli_requires_opt_in(authorize, tmp_path, capsys):
@@ -454,10 +457,14 @@ def test_legacy_single_span_cache_still_opens(authorize, tmp_path):
     assert path.read_bytes() == before
 
 
-def test_multiple_spans_weekly_refresh_remains_strict(authorize, tmp_path):
+def test_multiple_spans_weekly_refresh_recovers_exact_approved_file(authorize, tmp_path):
     from src.registry_sync import refresh
     raw, spans, _ = multiple_sample()
     authorize(raw, spans)
     result = refresh(tmp_path, downloader=lambda: raw, clock=lambda: NOW)
-    assert result['status'] == 'unavailable'
-    assert not (tmp_path / 'organizations.json').exists()
+    assert result['status'] == 'success'
+    assert result['malformed_segments'] == 3
+    assert OrganizationCache(tmp_path / 'organizations.json').official_identity('987654321')
+    before = (tmp_path / 'organizations.json').read_bytes()
+    assert refresh(tmp_path, downloader=lambda: raw + b'\n', force=True, clock=lambda: NOW)['status'] == 'unavailable'
+    assert (tmp_path / 'organizations.json').read_bytes() == before

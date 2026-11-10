@@ -5,6 +5,7 @@ import errno
 import os
 from pathlib import Path
 import tempfile
+import sys
 
 
 def safe_path(value):
@@ -114,3 +115,18 @@ def windows_lock(stream, backend):
         if exc.errno in {errno.EACCES, errno.EDEADLK, errno.EAGAIN} or getattr(exc, "winerror", None) in {33, 36}:
             raise BlockingIOError("Operational lock is busy") from None
         raise
+
+
+def registry_root(value=None):
+    """One persistent registry for all workflows; explicit root wins over env."""
+    configured = value if value is not None else os.environ.get('DONATION_RECEIPTS_REGISTRY_ROOT')
+    if configured is not None:
+        if not str(configured).strip():
+            raise ValueError('Empty registry root')
+        return operational_root(configured)
+    if sys.platform == 'win32':
+        local = os.environ.get('LOCALAPPDATA')
+        if not local or not Path(local).is_absolute():
+            raise ValueError('Absolute LOCALAPPDATA required for Windows registry')
+        return operational_root(Path(local) / 'DonationReceiptsRuntime' / 'registry')
+    return operational_root(Path(__file__).absolute().parents[1] / 'runtime' / 'registry')
