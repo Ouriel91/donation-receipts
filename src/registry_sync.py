@@ -10,8 +10,10 @@ from urllib.request import build_opener, HTTPRedirectHandler
 
 from src.organization_cache import OrganizationCache, _utc, _unique_object
 from src.private_runtime import (atomic_json, atomic_bytes, bounded_read,
-    operational_lock, operational_root, safe_path)
+    operational_lock, registry_root, safe_path)
 from src.registry_csv import parse_csv
+from src import registry_csv
+import hashlib
 
 RESOURCE = 'be5b7935-3922-45d4-9638-08871b17ec95'
 METADATA_URL = 'https://data.gov.il/api/3/action/resource_show?id=' + RESOURCE
@@ -90,7 +92,7 @@ def _state(path, now):
     return state
 
 
-def refresh(root, *, manual_csv=None, force=False, allow_large_change=False,
+def refresh(root=None, *, manual_csv=None, force=False, allow_large_change=False,
             downloader=download_registry, clock=None):
     """All snapshots/cache stay local; failure never advances official due time.
 
@@ -100,7 +102,7 @@ def refresh(root, *, manual_csv=None, force=False, allow_large_change=False,
     root_path, now, imported = None, None, {}
     reason = 'setup_failed'
     try:
-        root_path = operational_root(root)
+        root_path = registry_root(root)
         now = _utc((clock or (lambda: datetime.now(timezone.utc)))())
         with operational_lock(root_path):
             try:
@@ -125,7 +127,9 @@ def refresh(root, *, manual_csv=None, force=False, allow_large_change=False,
                 if not isinstance(raw, bytes) or len(raw) > MAX_CSV_BYTES:
                     raise ValueError('Invalid CSV download')
                 reason = 'csv_invalid_or_abnormal_change'
-                parsed = parse_csv(raw, imported_at=now)
+                # Only the exact SHA-bound previously reviewed bytes get recovery.
+                recover = hashlib.sha256(raw).hexdigest() == registry_csv.APPROVED_RECOVERY[0]
+                parsed = parse_csv(raw, imported_at=now, recover_malformed=recover)
                 old_count = len(cache._registry['records']) if cache._registry else 0
                 new_count, rejected = len(parsed['records']), len(parsed['quarantine'])
                 unchanged = cache._registry and cache._registry['file_sha256'] == parsed['file_sha256']
@@ -142,7 +146,7 @@ def refresh(root, *, manual_csv=None, force=False, allow_large_change=False,
                 if not snapshot.exists() or bounded_read(snapshot, MAX_CSV_BYTES) != raw:
                     snapshot_durable = atomic_bytes(snapshot, raw)
                 reason = 'cache_import_failed'
-                imported = cache.import_registry(snapshot)
+                imported = cache.import_registry(snapshot, recover_malformed=recover)
                 reason = 'state_publication_failed'
                 state_durable = atomic_json(state_path, {
                     'last_official_success': state.get('last_official_success') if manual_csv else now.isoformat(),
@@ -178,7 +182,7 @@ def main(argv=None):
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1] / 'runtime/registry')
+    parser.add_argument('--root', type=Path)
     parser.add_argument('--manual-csv', type=Path)
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--allow-large-change', action='store_true', help='Explicit reviewed shrink/quarantine override')
