@@ -6,6 +6,8 @@ The returned interval is not a complete approval history.
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import http.client
+import ssl
 import json
 import re
 import time
@@ -91,7 +93,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError('Unexpected redirect')
 
 
-def request_official(number):
+def _request_official_once(number):
     identifier(number)
     request = urllib.request.Request(ENDPOINT,
         data=json.dumps({'Charity_association_number': int(number)}).encode('ascii'),
@@ -110,6 +112,22 @@ def request_official(number):
     if len(raw) > 65536:
         raise OfficialResponseError({'code': 'oversize_response', 'response_bytes': len(raw)})
     return raw
+
+
+def request_official(number):
+    """Retry only transient transport/server failures; preserve evidence semantics."""
+    delays = (1, 2, 4)
+    for attempt in range(len(delays) + 1):
+        try:
+            return _request_official_once(number)
+        except OfficialResponseError as exc:
+            if exc.diagnostic.get('http_status') not in {408, 429, 500, 502, 503, 504} or attempt == len(delays):
+                raise
+        except (urllib.error.URLError, ConnectionError, TimeoutError,
+                http.client.IncompleteRead, ssl.SSLEOFError):
+            if attempt == len(delays):
+                raise
+        time.sleep(delays[attempt])
 
 
 class LiveSection46:

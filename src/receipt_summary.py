@@ -18,6 +18,7 @@ from src.pdf_text_extractor import (
     PdfExtractionError,
     extract_text_from_pdf,
     extract_text_from_pdf_pymupdf,
+    extract_tax_layout,
 )
 from src.receipt_metadata_extractor import (
     STATUS_NEEDS_REVIEW,
@@ -25,8 +26,10 @@ from src.receipt_metadata_extractor import (
     STATUS_PARTIAL,
     ReceiptMetadata,
     _find_receipt_number_in_text,
+    _short_tax_values,
     _valid_receipt_number,
     extract_metadata,
+    resolve_identifier_evidence,
 )
 
 _AMOUNT_STRIP_RE = re.compile(r"[₪\s,]")
@@ -246,11 +249,14 @@ def _extract_row(
     account: str,
     config: AccountConfig | None,
     year: int,
+    *,
+    source_name: str | None = None,
 ) -> ReceiptMetadata:
+    evidence_path = pdf_path if source_name is None else pdf_path.with_name(source_name)
     try:
         raw_text = extract_text_from_pdf(pdf_path)
         normalized = normalize_hebrew_text(raw_text)
-        meta = _best_metadata(pdf_path, raw_text, normalized)
+        meta = _best_metadata(evidence_path, raw_text, normalized)
         receipt_sources = [normalized, raw_text]
 
         try:
@@ -259,7 +265,7 @@ def _extract_row(
             raw_mupdf = ""
         if raw_mupdf:
             norm_mupdf = normalize_hebrew_text(raw_mupdf)
-            meta_mupdf = _best_metadata(pdf_path, raw_mupdf, norm_mupdf)
+            meta_mupdf = _best_metadata(evidence_path, raw_mupdf, norm_mupdf)
             if _score_metadata(meta_mupdf) > _score_metadata(meta):
                 meta, raw_text, normalized = meta_mupdf, raw_mupdf, norm_mupdf
                 receipt_sources = [norm_mupdf, raw_mupdf] + receipt_sources
@@ -290,6 +296,7 @@ def _extract_row(
         # Search both engines before retaining any filename-derived number.
         excluded = {value for value in (meta.registration_number, meta.donor_id,
                                         meta.tax_report_number) if value}
+        excluded.update(_short_tax_values(*receipt_sources))
         for text in receipt_sources:
             number = _find_receipt_number_in_text(text, excluded)
             if number:
@@ -297,9 +304,14 @@ def _extract_row(
                 break
         if meta.receipt_number and not _valid_receipt_number(meta.receipt_number, excluded):
             meta.receipt_number = ""
+        try:
+            tax_layout = extract_tax_layout(pdf_path)
+        except Exception:
+            tax_layout = ()  # optional evidence; preserve the existing reader path
+        resolve_identifier_evidence(meta, *receipt_sources, tax_layout=tax_layout)
     except Exception:
         meta = ReceiptMetadata(
-            file_name=pdf_path.name,
+            file_name=evidence_path.name,
             extraction_status=STATUS_NEEDS_REVIEW,
             notes="לא ניתן לקרוא את הקובץ",
         )
@@ -332,6 +344,47 @@ def _finalize_row(
     donor_note = _donor_match_note(meta.donor_id, meta.donor_name, config, meta.donor_match)
     meta.notes = "; ".join(filter(None, field_notes + surviving_notes + [donor_note]))
 
+    return meta
+
+
+_GENERATED_DONOR_NOTES = {
+    'תורם תואם לפי שם', 'ת"ז לא זוהתה בקבלה', 'תעודת זהות תורם לא תואמת',
+    'שם תורם לא תואם', 'לא זוהה תורם',
+}
+_GENERATED_FIELD_NOTES = {
+    *(f'שדה חובה חסר: {label}' for label in _CRITICAL_FIELDS_HE.values()),
+    'מספר אישור דיווח חסר — דרוש אימות', 'שדה לא נדרש לשנת מס זו',
+    'שדה אופציונלי חסר: שם עמותה',
+}
+_DUPLICATE_WARNING = 'חשד לכפילות — נדרשת בדיקה ידנית'
+
+
+def refresh_published_warnings(meta, config, year, *, resolved=(), duplicate_resolved=False,
+                               preserve_donor_notes=False):
+    """Rebuild display warnings while leaving catalog evidence untouched."""
+    from src.receipt_metadata_extractor import IDENTIFIER_REVIEW_NOTES, INSTITUTION_AMOUNT_REVIEW
+
+    notes = meta.notes
+    if duplicate_resolved:
+        notes = re.sub(r'(?:^|; )חשד לכפילות — לא אוחד; דרושה בדיקה ידנית \(קבוצה [^;]+\)(?=; |$)',
+                       '', notes)
+    obsolete = set(_GENERATED_FIELD_NOTES)
+    if not preserve_donor_notes:
+        obsolete.update(_GENERATED_DONOR_NOTES)
+    obsolete.update(IDENTIFIER_REVIEW_NOTES[field] for field in resolved if field in IDENTIFIER_REVIEW_NOTES)
+    if 'amount' in resolved:
+        obsolete.add(INSTITUTION_AMOUNT_REVIEW)
+    if 'receipt_date' in resolved:
+        obsolete.add('תאריך מתוך שם הקובץ')
+    if duplicate_resolved:
+        obsolete.add(_DUPLICATE_WARNING)
+    surviving = [note for note in notes.split('; ') if note and note not in obsolete]
+    meta.notes = '; '.join(surviving)
+    duplicate_review = any(note.startswith('חשד לכפילות — ') for note in surviving)
+    unresolved = (duplicate_review or any(note in surviving for note in IDENTIFIER_REVIEW_NOTES.values())
+                  or INSTITUTION_AMOUNT_REVIEW in surviving
+                  or any(note.startswith('זהות היסטורית משותפת — ') for note in surviving))
+    _finalize_row(meta, config, year, duplicate_review=unresolved)
     return meta
 
 

@@ -1,6 +1,7 @@
 """Enrich existing Excel reports using only locally supplied cache evidence."""
 
 import argparse
+from src.logger import stage, emit
 import hashlib
 from collections import Counter
 from datetime import date, datetime
@@ -96,6 +97,30 @@ def _enrichment(number, donated, cache):
 LIVE_HEADERS = ("סעיף 46 בתאריך התרומה", "פוטנציאל לזיכוי מס", "מועד בדיקת סעיף 46", "פרטי אימות")
 
 
+CONFLICT_DETAILS = 'קיימת סתירה בראיות הרשמיות; נדרשת בדיקה'
+
+
+def dated_section46(cache, live, number, donated):
+    tax = cache.lookup_tax(number, donated)
+    status = tax['section46_status']
+    live_values, live_status = live.values(number, donated)
+    if tax['conflict'] or (status == 'denied' and live_status == 'approved'):
+        return ('לא ידוע / דורש בירור', 'נדרש בירור', '', CONFLICT_DETAILS), 'unknown', 'conflicting_evidence'
+    if status != 'unknown' and not tax['stale']:
+        approved = status == 'approved'
+        evidence = tax['provenance']
+        dates = [item['retrieved_at'] for item in evidence]
+        sources = [(item['source_url'], item['approval_periods'], item['denial_periods'])
+                   for item in evidence]
+        return (
+            'מאושר' if approved else 'אין אישור מוכח לתאריך',
+            'עשוי להיות מוכר לזיכוי מס — בכפוף לתנאים' if approved else 'אין בסיס מאומת לקביעת זכאות',
+            max(dates)[:10],
+            'ראיות רשמיות מקומיות בתוקף; ' + str(sources),
+        ), status, 'approved' if approved else 'verified_denial'
+    return live_values, live_status, live.outcome(number, donated)
+
+
 def enrich_workbook(input_path, cache_path, output_path, *, live=None):
     """Append cached evidence, returning aggregate counts without donor data."""
     source, cache_file, output = map(_safe_path, (input_path, cache_path, output_path))
@@ -107,7 +132,9 @@ def enrich_workbook(input_path, cache_path, output_path, *, live=None):
         raise ValueError("Output must be a new path distinct from input and cache")
     if not output.parent.is_dir():
         raise ValueError("Output parent directory must exist")
-    cache = OrganizationCache(cache_file)
+    stage('REGISTRY')
+    cache = (live.registry if live is not None and live.registry._path == cache_file
+             else OrganizationCache(cache_file))
     wb = openpyxl.load_workbook(source, data_only=False, keep_links=True)
     if "Registry identity audit" in wb.sheetnames:
         wb.close()
@@ -129,6 +156,7 @@ def enrich_workbook(input_path, cache_path, output_path, *, live=None):
                 if number and donated:
                     entry = organizations.setdefault(number, {'dates': set(), 'name': ws.cell(row, name_col).value if name_col else None})
                     entry['dates'].add(donated)
+        stage('SECTION46')
         for number, entry in organizations.items():
             results = [cache.lookup_tax(number, d) for d in entry['dates']]
             if all(r['section46_status'] != 'unknown' and not r['stale'] and not r['conflict'] for r in results):
@@ -151,6 +179,7 @@ def enrich_workbook(input_path, cache_path, output_path, *, live=None):
     published = False
     counts = Counter()
     try:
+        stage('REGISTRY')
         for ws in list(wb.worksheets):
             if ws is audit:
                 continue
@@ -200,21 +229,8 @@ def enrich_workbook(input_path, cache_path, output_path, *, live=None):
                 if live is not None:
                     donated = _donation_date(ws.cell(row, date_col))
                     if number and donated:
-                        tax = cache.lookup_tax(number, donated)
-                        if tax['section46_status'] != 'unknown' and not tax['stale'] and not tax['conflict']:
-                            status = tax['section46_status']
-                            counts['outcome_' + ('approved' if status == 'approved' else 'verified_denial')] += 1
-                            dates = [e['retrieved_at'] for e in tax['provenance']]
-                            values = ("מאושר" if status == 'approved' else "אין אישור מוכח לתאריך",
-                                "עשוי להיות מוכר לזיכוי מס — בכפוף לתנאים" if status == 'approved' else "אין בסיס מאומת לקביעת זכאות",
-                                max(dates)[:10], "ראיות רשמיות מקומיות בתוקף; " + str([(e['source_url'], e['approval_periods'], e['denial_periods']) for e in tax['provenance']]))
-                        elif tax['conflict']:
-                            counts['outcome_conflicting_evidence'] += 1
-                            status = 'unknown'
-                            values = ('לא ידוע / דורש בירור', 'נדרש בירור', '', 'קיימת סתירה בראיות המקומיות; נדרשת בדיקה')
-                        else:
-                            values, status = live.values(number, donated)
-                            counts["outcome_" + live.outcome(number, donated)] += 1
+                        values, status, outcome = dated_section46(cache, live, number, donated)
+                        counts['outcome_' + outcome] += 1
                     else:
                         counts['outcome_invalid_input'] += 1
                         status = 'unknown'
@@ -230,6 +246,7 @@ def enrich_workbook(input_path, cache_path, output_path, *, live=None):
             raise ValueError("No worksheets with donation headers found")
         if audit.max_row == 1:
             wb.remove(audit)
+        stage('EXCEL')
         descriptor, temporary = tempfile.mkstemp(prefix=".enrichment-", suffix=".xlsx", dir=output.parent)
         os.close(descriptor)
         wb.save(temporary)

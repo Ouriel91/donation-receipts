@@ -58,18 +58,23 @@ def _consistent_optional_fields(metas: list[ReceiptMetadata]) -> bool:
                for field in COMPLEMENTARY_FIELDS)
 
 
-def consolidate_receipts(records: list[tuple[Path, ReceiptMetadata]]) -> list[Donation]:
+def consolidate_receipts(records: list[tuple[Path, ReceiptMetadata]], *, source_proofs=None) -> list[Donation]:
     """Require a complete, consistent identity across the entire candidate group.
 
     Incomplete or conflicting bridge records block automatic consolidation of
     that group. This deliberately prefers manual review over a false merge.
     Input order determines the primary source (earliest scanned month/name).
     """
+    proofs = source_proofs or {}
     keys = [_identity(meta) for _, meta in records]
     neighbors = [set() for _ in records]
     for i, a in enumerate(keys):
         for j in range(i + 1, len(keys)):
-            if _possibly_same(a, keys[j]):
+            same_source = (proofs.get(records[i][0], {}).get('sha256') is not None and
+                           proofs.get(records[i][0], {}).get('sha256') == proofs.get(records[j][0], {}).get('sha256') and
+                           not any(len(proofs.get(records[k][0], {}).get('receipt_numbers', [])) > 1 or
+                                   proofs.get(records[k][0], {}).get('multiple_amounts') for k in (i, j)))
+            if _possibly_same(a, keys[j]) or same_source:
                 neighbors[i].add(j)
                 neighbors[j].add(i)
 
@@ -88,9 +93,19 @@ def consolidate_receipts(records: list[tuple[Path, ReceiptMetadata]]) -> list[Do
         visited.update(component)
         indices = sorted(component)
         metas = [records[i][1] for i in indices]
-        complete_match = (all(value is not None for value in keys[first])
+        evidence = [proofs.get(records[i][0], {}) for i in indices]
+        shared = len({p.get('sha256') for p in evidence}) == 1 and evidence[0].get('sha256')
+        source_core=evidence[0].get('core')
+        fields=('registration_number','receipt_date','amount')
+        positions=(0,2,3)
+        source_match = (shared and source_core and all(v is not None for v in source_core)
+            and all(len(p.get('receipt_numbers',[]))==1 and not p.get('multiple_amounts') and p.get('core')==source_core for p in evidence)
+            and all(all(keys[i][position]==source_core[n] or
+                        (keys[i][position] is None and not getattr(records[i][1],fields[n]).strip())
+                        for n,position in enumerate(positions)) for i in indices))
+        complete_match = (not any(p.get('blocked') for p in evidence) and (source_match or (all(value is not None for value in keys[first])
                           and all(keys[i] == keys[first] for i in indices)
-                          and _consistent_optional_fields(metas))
+                          and _consistent_optional_fields(metas))))
         if len(indices) == 1 or not complete_match:
             for i in indices:
                 donations.append(Donation(replace(records[i][1]), (records[i][0],),
@@ -99,6 +114,11 @@ def consolidate_receipts(records: list[tuple[Path, ReceiptMetadata]]) -> list[Do
 
         merged = replace(metas[0])
         filled = 0
+        if source_match:
+            verified=evidence[0].get('source_fields',{})
+            for field in ('registration_number','receipt_number','receipt_date','amount'):
+                if not getattr(merged,field).strip() and verified.get(field):
+                    setattr(merged,field,verified[field]);filled+=1
         for field in COMPLEMENTARY_FIELDS:
             if not getattr(merged, field).strip():
                 replacement = next((getattr(meta, field) for meta in metas

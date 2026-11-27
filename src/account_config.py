@@ -10,6 +10,7 @@ class AccountConfig:
     display_name: str
     expected_donor_names: list[str] = field(default_factory=list)
     expected_donor_ids: list[str] = field(default_factory=list)
+    operating_timezone: str = "Asia/Jerusalem"
 
 
 def load_account_config(accounts_dir: Path, account: str) -> AccountConfig | None:
@@ -20,6 +21,7 @@ def load_account_config(accounts_dir: Path, account: str) -> AccountConfig | Non
     data = json.loads(path.read_text(encoding="utf-8"))
     return AccountConfig(
         display_name=data.get("display_name", account),
+        operating_timezone=data.get("operating_timezone", "Asia/Jerusalem"),
         expected_donor_names=data.get("expected_donor_names", []),
         expected_donor_ids=data.get("expected_donor_ids", []),
     )
