@@ -39,11 +39,22 @@ def test_rate_limit_retry_is_bounded():
         with pytest.raises(HttpError):
             _execute_with_rate_limit_retry(request)
     assert request.execute.call_count == 6
-    assert sleep.call_args_list == [call(5), call(15), call(30), call(60), call(120)]
+    assert sleep.call_args_list == [call(5), call(10), call(20), call(40), call(80)]
+
+
+@pytest.fixture(autouse=True)
+def synthetic_mailbox_binding(tmp_path):
+    (tmp_path / 'mailbox.txt').write_text('test@example.invalid', encoding='utf-8')
+
+
+def _service_mock():
+    service = MagicMock()
+    service.users().getProfile().execute.return_value = {'emailAddress': 'test@example.invalid'}
+    return service
 
 
 def _make_service(messages=None, detail=None):
-    mock_service = MagicMock()
+    mock_service = _service_mock()
     mock_service.users().messages().list().execute.return_value = (
         {"messages": messages} if messages is not None else {}
     )
@@ -185,7 +196,7 @@ def test_missing_filename_skipped():
 # --- download_attachment tests ---
 
 def _make_attachment_service(data: str | None):
-    mock_service = MagicMock()
+    mock_service = _service_mock()
     mock_service.users().messages().attachments().get().execute.return_value = (
         {"data": data} if data is not None else {}
     )
@@ -269,7 +280,7 @@ def _make_detail(msg_id: str, subject: str) -> dict:
 
 
 def test_fetch_emails_paginates_all_pages(tmp_path):
-    mock_service = MagicMock()
+    mock_service = _service_mock()
     mock_service.users().messages().list().execute.side_effect = [
         {"messages": [{"id": "msg1"}], "nextPageToken": "token_page2"},
         {"messages": [{"id": "msg2"}]},

@@ -3,6 +3,8 @@ from src.pdf_text_extractor import extract_text_from_pdf_bytes
 
 _PDF_STRONG_SIGNALS = [
     "תרומה",
+    "תרומתך",
+    "תרומתכם",
     "קבלה תרומה",
     "קבלה על תרומה",
     "סעיף 46",
@@ -31,6 +33,10 @@ def is_donation_pdf(content: bytes) -> tuple[bool, str]:
     except Exception as e:
         return False, f"could not extract PDF text: {e}"
 
+    return donation_text_evidence(raw_text)
+
+
+def donation_text_evidence(raw_text: str) -> tuple[bool, str]:
     normalized = normalize_hebrew_text(raw_text)
     # Search both raw and normalized to cover PDFs with visual or logical Hebrew ordering
     combined = (raw_text + "\n" + normalized).lower()

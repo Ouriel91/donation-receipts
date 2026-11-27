@@ -130,3 +130,19 @@ def registry_root(value=None):
             raise ValueError('Absolute LOCALAPPDATA required for Windows registry')
         return operational_root(Path(local) / 'DonationReceiptsRuntime' / 'registry')
     return operational_root(Path(__file__).absolute().parents[1] / 'runtime' / 'registry')
+
+
+def new_bytes(path, raw):
+    """Durable no-clobber receipt creation; a crash never exposes partial bytes."""
+    path = safe_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix='.receipt-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        os.unlink(temporary)

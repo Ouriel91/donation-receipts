@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from src.private_runtime import atomic_bytes, safe_path
+
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -9,8 +11,8 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
 def get_gmail_credentials(account_dir: Path) -> Credentials:
-    token_path = account_dir / "token.json"
-    creds_path = account_dir / "credentials.json"
+    token_path = safe_path(account_dir / "token.json")
+    creds_path = safe_path(account_dir / "credentials.json")
     creds = None
 
     if token_path.exists():
@@ -26,6 +28,6 @@ def get_gmail_credentials(account_dir: Path) -> Credentials:
         else:
             flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
             creds = flow.run_local_server(port=0)
-        token_path.write_text(creds.to_json())
+        atomic_bytes(token_path, creds.to_json().encode("utf-8"))
 
     return creds
